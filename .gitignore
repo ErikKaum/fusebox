@@ -1,0 +1,11 @@
+/target
+
+# PJRT shared libraries
+*.dylib
+*.so
+
+# StableHLO/MLIR bytecode and text
+*.bc
+*.mlir
+
+runner/stablehlo-runner

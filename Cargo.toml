@@ -1,0 +1,7 @@
+[package]
+name = "fusebox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pjrt = "0.2.0"
