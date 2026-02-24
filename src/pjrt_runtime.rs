@@ -1,12 +1,13 @@
-// src/pjrt_runtime.rs
-//
-// Minimal PJRT runner for StableHLO MLIR (CPU plugin), f32-only for now.
-// Expects the MLIR module to contain `func.func @main(...) -> ...`
-// (same requirement you hit in the Go runner).
-
+// src/pjrt_runtime.rs (additions / edits)
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use pjrt::{Client, F32, HostBuffer, LoadedExecutable, Program, ProgramFormat, TypedHostBuffer};
+
+use crate::ir::{Function, Module};
+use crate::print_mlir::print_module;
+use crate::shape::Shape;
+use crate::signature::{InputsF32, Signature};
 
 #[derive(Debug, Clone)]
 pub struct HostTensorF32 {
@@ -15,29 +16,51 @@ pub struct HostTensorF32 {
 }
 
 impl HostTensorF32 {
-    pub fn new(dims: Vec<i64>, data: Vec<f32>) -> Result<Self, String> {
-        let want = dims.iter().copied().map(|d| d as i128).product::<i128>();
+    pub fn from_shape(shape: &Shape, data: Vec<f32>) -> Result<Self, String> {
+        let want = shape
+            .dims
+            .iter()
+            .copied()
+            .map(|d| d as i128)
+            .product::<i128>()
+            .max(1);
         let got = data.len() as i128;
         if want != got {
             return Err(format!(
                 "shape {:?} implies {} elements, got {}",
-                dims, want, got
+                shape.dims, want, got
             ));
         }
-        Ok(Self { dims, data })
+        Ok(Self {
+            dims: shape.dims.clone(),
+            data,
+        })
     }
 }
 
 pub struct PjrtCpuRunner {
     client: Client,
     exec: LoadedExecutable,
+    sig: Arc<Signature>,
 }
 
 impl PjrtCpuRunner {
-    pub fn from_mlir_text(mlir: &str, plugin_path: impl AsRef<Path>) -> Result<Self, String> {
+    // New: build from your traced Function (best ergonomics).
+    pub fn from_function(func: &Function, plugin_path: impl AsRef<Path>) -> Result<Self, String> {
+        let module = Module {
+            functions: vec![func.clone()],
+        };
+        let mlir = print_module(&module);
+        Self::from_mlir_text_and_sig(&mlir, Signature::from_function(func), plugin_path)
+    }
+
+    fn from_mlir_text_and_sig(
+        mlir: &str,
+        sig: Signature,
+        plugin_path: impl AsRef<Path>,
+    ) -> Result<Self, String> {
         let plugin_path = plugin_path.as_ref();
 
-        // Load PJRT C API from the plugin dynamic library.
         let plugin_str = plugin_path
             .to_str()
             .ok_or_else(|| format!("plugin path {:?} is not valid UTF-8", plugin_path))?;
@@ -50,23 +73,34 @@ impl PjrtCpuRunner {
             .build()
             .map_err(|e| format!("create PJRT client: {}", e))?;
 
-        // Compile the MLIR (StableHLO) module into a loaded executable.
         let program = Program::new(ProgramFormat::MLIR, mlir.as_bytes().to_vec());
         let exec = LoadedExecutable::builder(&client, &program)
             .build()
             .map_err(|e| format!("compile MLIR to executable: {}", e))?;
 
-        Ok(Self { client, exec })
+        Ok(Self {
+            client,
+            exec,
+            sig: Arc::new(sig),
+        })
     }
 
-    pub fn run_f32(&self, inputs: Vec<HostTensorF32>) -> Result<HostTensorF32, String> {
-        // Copy inputs to device buffers.
-        // For now: f32-only, row-major dense.
-        let mut device_inputs = Vec::with_capacity(inputs.len());
-        for t in inputs {
+    pub fn inputs_f32(&self) -> InputsF32 {
+        InputsF32::new(self.sig.clone())
+    }
+
+    pub fn signature(&self) -> &Signature {
+        &self.sig
+    }
+
+    pub fn run_f32_inputs(&self, inputs: InputsF32) -> Result<HostTensorF32, String> {
+        let ordered = inputs.into_ordered()?; // Vec<(Shape, Vec<f32>)> in param order
+
+        let mut device_inputs = Vec::with_capacity(ordered.len());
+        for (shape, data) in ordered {
             let typed = TypedHostBuffer::<F32>::builder()
-                .data::<f32>(t.data)
-                .maybe_dims(Some(t.dims))
+                .data::<f32>(data)
+                .maybe_dims(Some(shape.dims))
                 .build();
 
             let host: HostBuffer = HostBuffer::from(typed);
@@ -77,14 +111,12 @@ impl PjrtCpuRunner {
             device_inputs.push(buf);
         }
 
-        // Execute (single device, single replica is the default for CPU plugin).
         let results = self
             .exec
             .execution(device_inputs)
             .run_sync()
             .map_err(|e| format!("execute: {}", e))?;
 
-        // results[device_index][output_index]
         let out_buf = results
             .get(0)
             .and_then(|xs| xs.get(0))
@@ -108,12 +140,11 @@ impl PjrtCpuRunner {
     }
 }
 
-// Small helper: choose plugin path from env, or fall back to a local filename.
+// unchanged helper
 pub fn default_cpu_plugin_path() -> PathBuf {
     if let Ok(p) = std::env::var("PJRT_CPU_PLUGIN") {
         return PathBuf::from(p);
     }
-    // macOS tends to be .dylib, Linux .so. Use whichever you have.
     let dylib = PathBuf::from("libpjrt_cpu.dylib");
     if dylib.exists() {
         return dylib;

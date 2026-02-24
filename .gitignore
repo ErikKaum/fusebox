@@ -9,3 +9,5 @@
 *.mlir
 
 runner/stablehlo-runner
+
+.DS_Store

@@ -2,7 +2,9 @@
 // and returns new Tensors.
 
 use crate::error::Error;
-use crate::ir::{Add, BroadcastInDim, DotGeneral, Function, Inst, Param, Stmt};
+use crate::ir::{
+    Add, BroadcastInDim, DotGeneral, Function, Inst, Logistic, Multiply, Param, ParamKind, Stmt,
+};
 use crate::shape::Shape;
 use crate::tensor::Tensor;
 use crate::value::ValueId;
@@ -33,13 +35,21 @@ impl FuncBuilder {
         ValueId(id)
     }
 
-    /// Create a parameter tensor (function argument).
-    pub fn param(&mut self, name: impl Into<String>, shape: Shape) -> Tensor {
+    pub fn input(&mut self, name: impl Into<String>, shape: Shape) -> Tensor {
+        self.param(name, shape, ParamKind::Input)
+    }
+
+    pub fn weight(&mut self, name: impl Into<String>, shape: Shape) -> Tensor {
+        self.param(name, shape, ParamKind::Weight)
+    }
+
+    fn param(&mut self, name: impl Into<String>, shape: Shape, kind: ParamKind) -> Tensor {
         let id = self.fresh();
         self.func.params.push(Param {
             name: name.into(),
             shape: shape.clone(),
             value: id,
+            kind,
         });
         Tensor::new(shape, id)
     }
@@ -153,5 +163,50 @@ impl FuncBuilder {
             }),
         });
         Ok(Tensor::new(out_shape, result))
+    }
+
+    /// Elementwise multiply. Shapes must match exactly.
+    pub fn mul(&mut self, a: &Tensor, b: &Tensor) -> Result<Tensor, Error> {
+        const OP: &str = "mul";
+
+        if a.dtype() != b.dtype() {
+            return Err(Error::DTypeMismatch {
+                op: OP,
+                a: a.dtype(),
+                b: b.dtype(),
+            });
+        }
+        if a.shape != b.shape {
+            return Err(Error::shape(OP, &a.shape, &b.shape));
+        }
+
+        let out_shape = a.shape.clone();
+        let result = self.fresh();
+
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Multiply(Multiply {
+                lhs: a.value,
+                rhs: b.value,
+                out: out_shape.clone(),
+            }),
+        });
+        Ok(Tensor::new(out_shape, result))
+    }
+
+    /// SiLU activation: x * sigmoid(x).
+    /// Emits a logistic (sigmoid) followed by an elementwise multiply.
+    pub fn silu(&mut self, x: &Tensor) -> Result<Tensor, Error> {
+        let sig_shape = x.shape.clone();
+        let sig_result = self.fresh();
+        self.func.insts.push(Stmt {
+            result: sig_result,
+            inst: Inst::Logistic(Logistic {
+                operand: x.value,
+                out: sig_shape.clone(),
+            }),
+        });
+        let sig = Tensor::new(sig_shape, sig_result);
+        self.mul(x, &sig)
     }
 }

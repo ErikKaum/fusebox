@@ -13,7 +13,8 @@ pub fn print_module(module: &Module) -> String {
 
     for func in &module.functions {
         out.push_str(&print_function(func));
-        out.push('\n');
+        // TODO: check if this is actually needed, I don't think so
+        // out.push('\n');
     }
 
     writeln!(&mut out, "}}").unwrap();
@@ -93,12 +94,31 @@ pub fn print_function(func: &Function) -> String {
             }
 
             Inst::Add(op) => {
-                // %r = stablehlo.add %lhs, %rhs : out_ty
                 let out_ty = op.out.mlir_tensor_type();
                 write!(
                     &mut out,
                     "    {} = stablehlo.add {}, {} : {}\n",
                     stmt.result, op.lhs, op.rhs, out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Multiply(op) => {
+                let out_ty = op.out.mlir_tensor_type();
+                write!(
+                    &mut out,
+                    "    {} = stablehlo.multiply {}, {} : {}\n",
+                    stmt.result, op.lhs, op.rhs, out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Logistic(op) => {
+                let in_ty = value_type(func, op.operand).unwrap().mlir_tensor_type();
+                write!(
+                    &mut out,
+                    "    {} = stablehlo.logistic {} : {}\n",
+                    stmt.result, op.operand, in_ty
                 )
                 .unwrap();
             }
@@ -138,6 +158,8 @@ fn value_type(func: &Function, id: ValueId) -> Option<&Shape> {
                 Inst::DotGeneral(op) => Some(&op.out),
                 Inst::BroadcastInDim(op) => Some(&op.out),
                 Inst::Add(op) => Some(&op.out),
+                Inst::Multiply(op) => Some(&op.out),
+                Inst::Logistic(op) => Some(&op.out),
             };
         }
     }

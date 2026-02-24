@@ -32,12 +32,19 @@ impl Function {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ParamKind {
+    Input,
+    Weight,
+}
+
 /// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub shape: Shape,
     pub value: ValueId,
+    pub kind: ParamKind,
 }
 
 /// One SSA statement: `%result = inst(...)`
@@ -56,6 +63,8 @@ pub enum Inst {
     DotGeneral(DotGeneral),
     BroadcastInDim(BroadcastInDim),
     Add(Add),
+    Multiply(Multiply),
+    Logistic(Logistic),
 }
 
 /// DotGeneral config (enough to print stablehlo.dot_general attrs)
@@ -84,5 +93,20 @@ pub struct BroadcastInDim {
 pub struct Add {
     pub lhs: ValueId,
     pub rhs: ValueId,
+    pub out: Shape,
+}
+
+/// Elementwise multiply
+#[derive(Debug, Clone)]
+pub struct Multiply {
+    pub lhs: ValueId,
+    pub rhs: ValueId,
+    pub out: Shape,
+}
+
+/// Elementwise logistic (sigmoid): 1 / (1 + exp(-x))
+#[derive(Debug, Clone)]
+pub struct Logistic {
+    pub operand: ValueId,
     pub out: Shape,
 }

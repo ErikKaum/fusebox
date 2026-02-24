@@ -4,13 +4,16 @@ use core::fmt;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DType {
+    F16,
+    BF16,
     F32,
 }
 
 impl DType {
-    /// How this dtype is spelled in MLIR/StableHLO textual form.
     pub fn mlir_str(self) -> &'static str {
         match self {
+            DType::F16 => "f16",
+            DType::BF16 => "bf16",
             DType::F32 => "f32",
         }
     }

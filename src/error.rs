@@ -33,8 +33,19 @@ pub enum Error {
         a: Shape,
         b: Shape,
     },
+    /// Mismatch between safetensor file and module struct
+    MissingWeight {
+        key: String,
+    },
+    UnsupportedDType {
+        key: String,
+        dtype: String,
+    },
     /// A feature intentionally not implement in yet.
-    Unsupported { op: &'static str, msg: &'static str },
+    Unsupported {
+        op: &'static str,
+        msg: &'static str,
+    },
 }
 
 impl Error {
@@ -78,6 +89,12 @@ impl fmt::Display for Error {
             }
             Error::ShapeMismatch { op, a, b } => {
                 write!(f, "{op}: shape mismatch ({a} vs {b})")
+            }
+            Error::MissingWeight { key } => {
+                write!(f, "missing weight {:?}", key)
+            }
+            Error::UnsupportedDType { key, dtype } => {
+                write!(f, "unsupported dtype {} for {:?}", dtype, key)
             }
             Error::Unsupported { op, msg } => {
                 write!(f, "{op}: unsupported ({msg})")

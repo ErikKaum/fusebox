@@ -1,7 +1,12 @@
+[workspace]
+members = [".", "fusebox_macros"]
+
 [package]
 name = "fusebox"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fusebox_macros = { path = "fusebox_macros" }
 pjrt = "0.2.0"
+safetensors = "0.7.0"
