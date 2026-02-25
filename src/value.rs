@@ -9,17 +9,8 @@ use core::fmt;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ValueId(pub u32);
 
-impl ValueId {
-    /// Formats this value as an MLIR SSA name, e.g. "%0".
-    pub fn mlir_name(self) -> String {
-        format!("%{}", self.0)
-    }
-}
-
 impl fmt::Display for ValueId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // We avoid allocating in Display; printer code can use mlir_name()
-        // if it wants a String.
         write!(f, "%{}", self.0)
     }
 }

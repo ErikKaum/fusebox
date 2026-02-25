@@ -1,36 +1,35 @@
-// src/safetensors_shapes.rs
-use std::{collections::HashMap, fs, path::Path};
+// src/safetensor_shapes.rs
+use std::collections::HashMap;
 
-use safetensors::{Dtype as SdType, SafeTensors};
+use safetensors::SafeTensors;
 
-use crate::dtype::DType;
-use crate::error::Error;
-use crate::module_api::ShapeProvider;
-use crate::shape::Shape;
+use crate::{dtype::DType, error::Error, module_api::ShapeProvider, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct SafeTensorShapes {
-    // name -> (dtype, dims)
-    map: HashMap<String, (SdType, Vec<i64>)>,
+    map: HashMap<String, Shape>,
 }
 
 impl SafeTensorShapes {
-    // TODO note that this reads the entire file now, future let's just peek what we need
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
-        let path = path.as_ref();
-        let bytes = fs::read(path).map_err(|e| format!("read {:?}: {}", path, e))?;
-
-        let st = SafeTensors::deserialize(&bytes)
-            .map_err(|e| format!("parse safetensors {:?}: {}", path, e))?;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let st = SafeTensors::deserialize(bytes)
+            .map_err(|e| format!("parse safetensors: {}", e))?;
 
         let mut map = HashMap::new();
         for name in st.names() {
-            let tv = st
-                .tensor(name)
-                .map_err(|e| format!("read tensor {:?} from {:?}: {}", name, path, e))?;
-
+            let tv = st.tensor(name).map_err(|e| format!("tensor {}: {}", name, e))?;
             let dims: Vec<i64> = tv.shape().iter().map(|&d| d as i64).collect();
-            map.insert(name.to_string(), (tv.dtype(), dims));
+
+            let dtype = match tv.dtype() {
+                safetensors::Dtype::F32 => DType::F32,
+                safetensors::Dtype::F16 => DType::F16,
+                safetensors::Dtype::BF16 => DType::BF16,
+                other => {
+                    return Err(format!("unsupported dtype {:?} for tensor {}", other, name));
+                }
+            };
+
+            map.insert(name.to_string(), Shape::new(dims, dtype));
         }
 
         Ok(Self { map })
@@ -39,22 +38,6 @@ impl SafeTensorShapes {
 
 impl ShapeProvider for SafeTensorShapes {
     fn shape_of(&self, full_name: &str) -> Result<Option<Shape>, Error> {
-        let Some((sd, dims)) = self.map.get(full_name) else {
-            return Ok(None);
-        };
-
-        let dtype = match sd {
-            SdType::F32 => DType::F32,
-            SdType::F16 => DType::F16,
-            SdType::BF16 => DType::BF16,
-            other => {
-                return Err(Error::UnsupportedDType {
-                    key: full_name.to_string(),
-                    dtype: format!("{:?}", other),
-                });
-            }
-        };
-
-        Ok(Some(Shape::new(dims.clone(), dtype)))
+        Ok(self.map.get(full_name).cloned())
     }
 }

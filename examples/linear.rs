@@ -1,13 +1,12 @@
-// src/nn/linear.rs
+use fusebox::checkpoint;
 use fusebox::dtype::DType;
+use fusebox::engine::Engine;
 use fusebox::error::Error;
 use fusebox::module_api::Module;
-use fusebox::pjrt_runtime::{PjrtCpuRunner, default_cpu_plugin_path};
-use fusebox::safetensor_shapes::SafeTensorShapes;
+use fusebox::pjrt_runtime::default_cpu_plugin_path;
 use fusebox::shape::Shape;
 use fusebox::tensor::Tensor;
 use fusebox::trace::TraceCx;
-use fusebox::weights::WeightsF32;
 use fusebox_macros::Module;
 
 #[derive(Module)]
@@ -48,33 +47,23 @@ impl Mlp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cx = TraceCx::new("main");
+    let ckpt = checkpoint::Checkpoint::from_file("model.safetensors")?;
+    let engine = Engine::new(default_cpu_plugin_path());
 
-    let x = cx.input("x", Shape::new(vec![2, 4], DType::F32));
+    let runner = engine.compile("main", |cx| {
+        let x = cx.input("x", Shape::new(vec![2, 4], DType::F32));
+        let mlp = Mlp::trace(cx, "proj", ckpt.shapes())?;
+        mlp.forward(cx, &x)
+    })?;
 
-    let shapes = SafeTensorShapes::from_file("model.safetensors").unwrap();
-    let mlp = Mlp::trace(&mut cx, "proj", &shapes).unwrap();
-    let y = mlp.forward(&mut cx, &x)?;
+    let weights = ckpt.weights_f32_for_signature(runner.signature())?;
+    let sess = runner.session_f32(weights);
 
-    cx.ret(&y);
-
-    let func = cx.finish();
-
-    let runner = PjrtCpuRunner::from_function(&func, default_cpu_plugin_path())?;
-
-    // load weights for every param except runtime inputs
-    let weights =
-        WeightsF32::from_safetensors_for_weights("model.safetensors", runner.signature())?;
-
-    // build bindings from signature, apply weights, then set runtime input(s)
-    let mut bindings = runner.inputs_f32();
-    weights.apply_into(&mut bindings)?;
-    bindings.set("x", vec![1., 2., 3., 4., 5., 6., 7., 8.])?;
-
-    let y = runner.run_f32_inputs(bindings)?;
+    let y = sess.run(|inputs| {
+        inputs.set_input("x", vec![1., 2., 3., 4., 5., 6., 7., 8.])
+    })?;
 
     println!("{:?}", y.dims);
     println!("{:?}", y.data);
-
     Ok(())
 }

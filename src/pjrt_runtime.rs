@@ -1,13 +1,14 @@
-// src/pjrt_runtime.rs (additions / edits)
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pjrt::{Client, F32, HostBuffer, LoadedExecutable, Program, ProgramFormat, TypedHostBuffer};
+use pjrt::{
+    Buffer, Client, F32, HostBuffer, LoadedExecutable, Program, ProgramFormat, TypedHostBuffer,
+};
 
 use crate::ir::{Function, Module};
 use crate::print_mlir::print_module;
-use crate::shape::Shape;
 use crate::signature::{InputsF32, Signature};
+use crate::weights::WeightsF32;
 
 #[derive(Debug, Clone)]
 pub struct HostTensorF32 {
@@ -15,28 +16,6 @@ pub struct HostTensorF32 {
     pub data: Vec<f32>,
 }
 
-impl HostTensorF32 {
-    pub fn from_shape(shape: &Shape, data: Vec<f32>) -> Result<Self, String> {
-        let want = shape
-            .dims
-            .iter()
-            .copied()
-            .map(|d| d as i128)
-            .product::<i128>()
-            .max(1);
-        let got = data.len() as i128;
-        if want != got {
-            return Err(format!(
-                "shape {:?} implies {} elements, got {}",
-                shape.dims, want, got
-            ));
-        }
-        Ok(Self {
-            dims: shape.dims.clone(),
-            data,
-        })
-    }
-}
 
 pub struct PjrtCpuRunner {
     client: Client,
@@ -44,8 +23,12 @@ pub struct PjrtCpuRunner {
     sig: Arc<Signature>,
 }
 
+pub struct SessionF32<'a> {
+    runner: &'a PjrtCpuRunner,
+    weights: WeightsF32,
+}
+
 impl PjrtCpuRunner {
-    // New: build from your traced Function (best ergonomics).
     pub fn from_function(func: &Function, plugin_path: impl AsRef<Path>) -> Result<Self, String> {
         let module = Module {
             functions: vec![func.clone()],
@@ -93,54 +76,76 @@ impl PjrtCpuRunner {
         &self.sig
     }
 
+    pub fn session_f32(&self, weights: WeightsF32) -> SessionF32<'_> {
+        SessionF32 {
+            runner: self,
+            weights,
+        }
+    }
+
     pub fn run_f32_inputs(&self, inputs: InputsF32) -> Result<HostTensorF32, String> {
-        let ordered = inputs.into_ordered()?; // Vec<(Shape, Vec<f32>)> in param order
+        let ordered = inputs.into_ordered()?;
 
         let mut device_inputs = Vec::with_capacity(ordered.len());
         for (shape, data) in ordered {
-            let typed = TypedHostBuffer::<F32>::builder()
-                .data::<f32>(data)
-                .maybe_dims(Some(shape.dims))
-                .build();
-
-            let host: HostBuffer = HostBuffer::from(typed);
-            let buf = host
+            let buf = f32_host_buffer(&data, &shape.dims)
                 .copy_to_sync(&self.client)
                 .map_err(|e| format!("copy input to device: {}", e))?;
-
             device_inputs.push(buf);
         }
 
-        let results = self
-            .exec
-            .execution(device_inputs)
-            .run_sync()
-            .map_err(|e| format!("execute: {}", e))?;
-
-        let out_buf = results
-            .get(0)
-            .and_then(|xs| xs.get(0))
-            .ok_or_else(|| "no outputs returned".to_string())?;
-
-        let host_out = out_buf
-            .copy_to_host_sync()
-            .map_err(|e| format!("copy output to host: {}", e))?;
-
-        match host_out {
-            HostBuffer::F32(tb) => Ok(HostTensorF32 {
-                dims: tb.dims().to_vec(),
-                data: tb.data().to_vec(),
-            }),
-            other => Err(format!("expected f32 output, got {:?}", other)),
-        }
+        execute_and_extract_f32(&self.exec, device_inputs)
     }
 
-    pub fn client(&self) -> &Client {
-        &self.client
+}
+
+impl<'a> SessionF32<'a> {
+    pub fn run(
+        &self,
+        set_inputs: impl FnOnce(&mut InputsF32) -> Result<(), String>,
+    ) -> Result<HostTensorF32, String> {
+        let mut inputs = self.runner.inputs_f32();
+        self.weights.apply_ref(&mut inputs)?;
+        set_inputs(&mut inputs)?;
+        self.runner.run_f32_inputs(inputs)
     }
 }
 
-// unchanged helper
+fn f32_host_buffer(data: &[f32], dims: &[i64]) -> HostBuffer {
+    let typed = TypedHostBuffer::<F32>::builder()
+        .data::<f32>(data.to_vec())
+        .maybe_dims(Some(dims.to_vec()))
+        .build();
+    HostBuffer::from(typed)
+}
+
+fn execute_and_extract_f32(
+    exec: &LoadedExecutable,
+    arg_buffers: Vec<Buffer>,
+) -> Result<HostTensorF32, String> {
+    let results = exec
+        .execution(arg_buffers)
+        .run_sync()
+        .map_err(|e| format!("execute: {}", e))?;
+
+    let out_buf = results
+        .get(0)
+        .and_then(|xs| xs.get(0))
+        .ok_or_else(|| "no outputs returned".to_string())?;
+
+    let host_out = out_buf
+        .copy_to_host_sync()
+        .map_err(|e| format!("copy output to host: {}", e))?;
+
+    match host_out {
+        HostBuffer::F32(tb) => Ok(HostTensorF32 {
+            dims: tb.dims().to_vec(),
+            data: tb.data().to_vec(),
+        }),
+        other => Err(format!("expected f32 output, got {:?}", other)),
+    }
+}
+
 pub fn default_cpu_plugin_path() -> PathBuf {
     if let Ok(p) = std::env::var("PJRT_CPU_PLUGIN") {
         return PathBuf::from(p);

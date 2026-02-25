@@ -15,3 +15,7 @@ pub mod tensor;
 pub mod trace;
 pub mod value;
 pub mod weights;
+pub mod checkpoint;
+pub mod trace_fn;
+pub mod engine;
+

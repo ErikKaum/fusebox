@@ -54,17 +54,6 @@ impl TraceCx {
         }
     }
 
-    // pub fn enter_scope<'a>(&'a mut self, scope: &str) -> TraceScope<'a> {
-    //     let prev = self.prefix.clone();
-    //     if self.prefix.is_empty() {
-    //         self.prefix = format!("{}/", scope);
-    //     } else {
-    //         self.prefix.push_str(scope);
-    //         self.prefix.push('/');
-    //     }
-    //     TraceScope { cx: self, prev }
-    // }
-
     /// Push a naming scope; returns the prefix length before the push.
     /// Call `pop_scope` with the returned value to restore.
     pub fn push_scope(&mut self, scope: &str) -> usize {
@@ -103,13 +92,3 @@ impl TraceCx {
     }
 }
 
-pub struct TraceScope<'a> {
-    cx: &'a mut TraceCx,
-    prev: String,
-}
-
-impl Drop for TraceScope<'_> {
-    fn drop(&mut self) {
-        self.cx.prefix = self.prev.clone();
-    }
-}

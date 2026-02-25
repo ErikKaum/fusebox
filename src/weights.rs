@@ -1,6 +1,4 @@
-// src/weights.rs (relevant edits)
-
-use std::{collections::HashMap, fs, path::Path};
+use std::collections::HashMap;
 
 use safetensors::{Dtype as SdType, SafeTensors};
 
@@ -13,18 +11,23 @@ pub struct WeightsF32 {
 }
 
 impl WeightsF32 {
-    /// Load all parameters tagged as Weight in the signature.
-    /// Errors if any weight is missing or has wrong dtype/shape.
-    pub fn from_safetensors_for_weights(
-        path: impl AsRef<Path>,
+    pub fn from_safetensors_for_weights_bytes(
+        bytes: &[u8],
         sig: &Signature,
     ) -> Result<Self, String> {
-        let bytes = fs::read(path.as_ref())
-            .map_err(|e| format!("read safetensors {:?}: {}", path.as_ref(), e))?;
+        let st = SafeTensors::deserialize(bytes)
+            .map_err(|e| format!("parse safetensors: {}", e))?;
+        Self::from_safetensors_inner(&st, sig)
+    }
 
-        let st = SafeTensors::deserialize(&bytes)
-            .map_err(|e| format!("parse safetensors {:?}: {}", path.as_ref(), e))?;
+    pub fn apply_ref(&self, bindings: &mut crate::signature::InputsF32) -> Result<(), String> {
+        for (name, data) in &self.data {
+            bindings.set(name, data.clone())?;
+        }
+        Ok(())
+    }
 
+    fn from_safetensors_inner(st: &SafeTensors, sig: &Signature) -> Result<Self, String> {
         let mut out = HashMap::new();
 
         for p in sig.params() {
@@ -53,7 +56,8 @@ impl WeightsF32 {
             }
 
             let raw = tv.data();
-            let vals = bytes_to_f32_le(&raw).map_err(|e| format!("weight {:?}: {}", p.name, e))?;
+            let vals =
+                bytes_to_f32_le(raw).map_err(|e| format!("weight {:?}: {}", p.name, e))?;
 
             let want = p.shape.dims.iter().map(|&d| d as i128).product::<i128>();
             if vals.len() as i128 != want {
@@ -69,13 +73,6 @@ impl WeightsF32 {
         }
 
         Ok(Self { data: out })
-    }
-
-    pub fn apply_into(self, bindings: &mut crate::signature::InputsF32) -> Result<(), String> {
-        for (name, data) in self.data {
-            bindings.set(&name, data)?;
-        }
-        Ok(())
     }
 }
 

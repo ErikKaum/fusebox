@@ -21,30 +21,12 @@ impl Shape {
         }
     }
 
-    pub fn scalar(dtype: DType) -> Self {
-        Self {
-            dims: Vec::new(),
-            dtype,
-        }
-    }
-
     pub fn rank(&self) -> usize {
         self.dims.len()
     }
 
-    pub fn is_scalar(&self) -> bool {
-        self.dims.is_empty()
-    }
-
     pub fn dim(&self, axis: usize) -> i64 {
         self.dims[axis]
-    }
-
-    pub fn with_dtype(&self, dtype: DType) -> Self {
-        Self {
-            dims: self.dims.clone(),
-            dtype,
-        }
     }
 
     /// Returns the MLIR tensor type spelling, e.g.:
