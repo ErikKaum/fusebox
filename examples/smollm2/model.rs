@@ -176,8 +176,12 @@ pub struct SmolLM2Model {
 
 // ── Trace helper ────────────────────────────────────────────────────
 
-/// Trace the full SmolLM2 graph. Returns the argmax token id at the last
-/// sequence position (shape: [batch], dtype: i32).
+/// Trace the full SmolLM2 graph. Returns the argmax token id at a
+/// caller-specified sequence position (shape: [batch], dtype: i32).
+///
+/// Inputs:
+///   - `tokens`:   [batch, seq] i32  — token ids (right-padded with 0)
+///   - `last_pos`: [batch]     i32  — index of the last real token per row
 pub fn trace_smollm2(
     cx: &mut TraceCx,
     shapes: &dyn ShapeProvider,
@@ -185,6 +189,7 @@ pub fn trace_smollm2(
     seq: i64,
 ) -> Result<Tensor, Error> {
     let tokens = cx.input("tokens", Shape::new(vec![batch, seq], DType::I32));
+    let last_pos = cx.input("last_pos", Shape::new(vec![batch], DType::I32));
 
     let model = SmolLM2Model::trace(cx, "model", shapes)?;
     let mut h = model.embed_tokens.forward(&tokens)?;
@@ -202,8 +207,14 @@ pub fn trace_smollm2(
     let lm_weight_t = model.embed_tokens.weight.transpose(&[1, 0])?;
     let logits = h.matmul(&lm_weight_t)?;
 
-    let last_logits = logits.narrow(1, seq - 1, 1)?.squeeze(1)?;
-    let next_token = last_logits.argmax(-1)?;
+    // Extract logits at each row's last real token position via one-hot masking.
+    let seq_idx = cx.iota(Shape::new(vec![1, seq], DType::I32), 1)?;
+    let last_pos_2d = last_pos.unsqueeze(1)?;
+    let mask = seq_idx.eq(&last_pos_2d)?;
+    let mask_f = mask.to_dtype(DType::F32).unsqueeze(-1)?;
+    let gathered = (&logits * &mask_f)?.sum(&[1])?;
+
+    let next_token = gathered.argmax(-1)?;
 
     Ok(next_token)
 }

@@ -206,9 +206,13 @@ fn chat(
         stdout.flush()?;
 
         for _ in 0..max_tokens {
-            let input = prepare_input(&context, seq as usize);
+            let seq_len = seq as usize;
+            let (tokens, last_pos) = prepare_input(&context, seq_len);
 
-            let result = sess.run(|inputs| inputs.set_input_i32("tokens", input))?;
+            let result = sess.run(|inputs| {
+                inputs.set_input_i32("tokens", tokens)?;
+                inputs.set_input_i32("last_pos", last_pos)
+            })?;
 
             let next_token = result.to_i32().unwrap()[0];
             if next_token == eos_id {
@@ -233,16 +237,26 @@ fn chat(
     Ok(())
 }
 
-/// Build a [seq]-length i32 input from the current context.
-/// Left-pads with 0 if context is shorter than seq, or takes the last
-/// `seq` tokens when context has grown past the window.
-fn prepare_input(context: &[i32], seq: usize) -> Vec<i32> {
+/// Build right-padded tokens and the index of the last real token.
+///
+/// Returns `(tokens, last_pos)` where:
+///   - `tokens` is [seq] i32, right-padded with 0 if shorter than seq,
+///     or the last `seq` tokens when context exceeds the window.
+///   - `last_pos` is [1] i32 holding the 0-based index of the last real
+///     token within the returned window.
+///
+/// Right-padding keeps existing tokens at stable positions so their
+/// RoPE embeddings stay consistent across generation steps.
+fn prepare_input(context: &[i32], seq: usize) -> (Vec<i32>, Vec<i32>) {
     if context.len() >= seq {
-        context[context.len() - seq..].to_vec()
+        let tokens = context[context.len() - seq..].to_vec();
+        let last_pos = vec![(seq - 1) as i32];
+        (tokens, last_pos)
     } else {
-        let mut padded = vec![0i32; seq - context.len()];
-        padded.extend_from_slice(context);
-        padded
+        let mut tokens = context.to_vec();
+        let last_pos = vec![(tokens.len() - 1) as i32];
+        tokens.resize(seq, 0);
+        (tokens, last_pos)
     }
 }
 
