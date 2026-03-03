@@ -8,7 +8,7 @@ Fusebox started as an exercise in understanding how [ZML](https://github.com/zml
 
 It even runs the `SmolLM2-135M-Instruct` model on CPU:
 
-```bash
+```console
 ./target/release/examples/smollm2 chat --compiled examples/smollm2/artifacts/smollm2.compiled
 Loaded compiled model in 97.97ms
 Loaded weights in 91.29ms
