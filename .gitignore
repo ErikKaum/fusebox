@@ -11,3 +11,5 @@
 runner/stablehlo-runner
 
 .DS_Store
+
+transformer.safetensors

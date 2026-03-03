@@ -1,24 +1,16 @@
-// src/ir.rs defines a tiny internal IR: a Function with params, a list of instructions (result_id, Inst),
-// and a return value; and Inst variants for the three ops we support.
-
 use crate::{shape::Shape, value::ValueId};
 
-/// A whole module. Usually just a single function.
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
 }
 
-/// A function in our tiny IR.
-///
-/// Params are SSA values too: each parameter gets a ValueId.
-/// Instructions are SSA-producing: each instruction produces one result ValueId.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
     pub insts: Vec<Stmt>,
-    pub ret: Option<ValueId>,
+    pub returns: Vec<ValueId>,
 }
 
 impl Function {
@@ -27,7 +19,7 @@ impl Function {
             name: name.into(),
             params: Vec::new(),
             insts: Vec::new(),
-            ret: None,
+            returns: Vec::new(),
         }
     }
 }
@@ -38,7 +30,6 @@ pub enum ParamKind {
     Weight,
 }
 
-/// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
@@ -47,40 +38,38 @@ pub struct Param {
     pub kind: ParamKind,
 }
 
-/// One SSA statement: `%result = inst(...)`
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub result: ValueId,
     pub inst: Inst,
 }
 
-/// The only operations we support initially:
-/// - a 2D matmul via stablehlo.dot_general
-/// - broadcast_in_dim for bias
-/// - elementwise add
+// ── Generalized op structs ──────────────────────────────────────────
+
 #[derive(Debug, Clone)]
-pub enum Inst {
-    DotGeneral(DotGeneral),
-    BroadcastInDim(BroadcastInDim),
-    Add(Add),
-    Multiply(Multiply),
-    Logistic(Logistic),
+pub struct BinaryOp {
+    pub lhs: ValueId,
+    pub rhs: ValueId,
+    pub out: Shape,
 }
 
-/// DotGeneral config (enough to print stablehlo.dot_general attrs)
+#[derive(Debug, Clone)]
+pub struct UnaryOp {
+    pub operand: ValueId,
+    pub out: Shape,
+}
+
 #[derive(Debug, Clone)]
 pub struct DotGeneral {
     pub lhs: ValueId,
     pub rhs: ValueId,
     pub out: Shape,
-
     pub contracting_dims_lhs: Vec<i64>,
     pub contracting_dims_rhs: Vec<i64>,
     pub batching_dims_lhs: Vec<i64>,
     pub batching_dims_rhs: Vec<i64>,
 }
 
-/// BroadcastInDim config
 #[derive(Debug, Clone)]
 pub struct BroadcastInDim {
     pub operand: ValueId,
@@ -88,25 +77,62 @@ pub struct BroadcastInDim {
     pub dims: Vec<i64>,
 }
 
-/// Add config
 #[derive(Debug, Clone)]
-pub struct Add {
-    pub lhs: ValueId,
-    pub rhs: ValueId,
+pub struct Constant {
+    pub value: f64,
     pub out: Shape,
 }
 
-/// Elementwise multiply
 #[derive(Debug, Clone)]
-pub struct Multiply {
-    pub lhs: ValueId,
-    pub rhs: ValueId,
-    pub out: Shape,
-}
-
-/// Elementwise logistic (sigmoid): 1 / (1 + exp(-x))
-#[derive(Debug, Clone)]
-pub struct Logistic {
+pub struct TransposeOp {
     pub operand: ValueId,
+    pub permutation: Vec<i64>,
     pub out: Shape,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ReduceKind {
+    Sum,
+    Max,
+    Min,
+}
+
+#[derive(Debug, Clone)]
+pub struct Reduce {
+    pub operand: ValueId,
+    pub init_value: ValueId,
+    pub dimensions: Vec<i64>,
+    pub kind: ReduceKind,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub enum Inst {
+    DotGeneral(DotGeneral),
+    BroadcastInDim(BroadcastInDim),
+
+    // Binary arithmetic
+    Add(BinaryOp),
+    Subtract(BinaryOp),
+    Multiply(BinaryOp),
+    Divide(BinaryOp),
+    Maximum(BinaryOp),
+
+    // Unary
+    Negate(UnaryOp),
+    Exponential(UnaryOp),
+    Log(UnaryOp),
+    Sqrt(UnaryOp),
+    Rsqrt(UnaryOp),
+    Abs(UnaryOp),
+    Tanh(UnaryOp),
+    Logistic(UnaryOp),
+
+    Constant(Constant),
+
+    // Shape manipulation
+    Reshape(UnaryOp),
+    Transpose(TransposeOp),
+
+    Reduce(Reduce),
 }

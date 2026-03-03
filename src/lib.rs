@@ -1,7 +1,6 @@
-// This is just the crate entry point and re-exports the public API
-// (Builder, Tensor, Shape, DType, and the MLIR printer function).
-
 pub mod builder;
+pub mod checkpoint;
+pub mod device;
 pub mod dtype;
 pub mod error;
 pub mod ir;
@@ -13,9 +12,19 @@ pub mod shape;
 pub mod signature;
 pub mod tensor;
 pub mod trace;
+pub mod trace_fn;
 pub mod value;
 pub mod weights;
-pub mod checkpoint;
-pub mod trace_fn;
-pub mod engine;
 
+pub mod prelude {
+    pub use crate::checkpoint::Checkpoint;
+    pub use crate::device::Device;
+    pub use crate::dtype::DType;
+    pub use crate::error::Error;
+    pub use crate::module_api::{Module, ShapeProvider};
+    pub use crate::pjrt_runtime::{CompiledModel, HostTensor};
+    pub use crate::shape::Shape;
+    pub use crate::tensor::Tensor;
+    pub use crate::trace::TraceCx;
+    pub use fusebox_macros::Module;
+}

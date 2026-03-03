@@ -1,22 +1,17 @@
-// defines FuncBuilder: creates params (which are Tensors), appends instructions, does shape inference/checks,
-// and returns new Tensors.
-
 use crate::error::Error;
 use crate::ir::{
-    Add, BroadcastInDim, DotGeneral, Function, Inst, Logistic, Multiply, Param, ParamKind, Stmt,
+    BinaryOp, BroadcastInDim, Constant, DotGeneral, Function, Inst, Param, ParamKind, Reduce,
+    ReduceKind, Stmt, TransposeOp, UnaryOp,
 };
 use crate::shape::Shape;
-use crate::tensor::Tensor;
 use crate::value::ValueId;
 
-/// Builds a single function (graph) by appending SSA instructions.
 pub struct FuncBuilder {
     func: Function,
     next_id: u32,
 }
 
 impl FuncBuilder {
-    /// Start building a new function with the given name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             func: Function::new(name),
@@ -24,189 +19,658 @@ impl FuncBuilder {
         }
     }
 
-    /// Finish building and return the Function IR.
-    pub fn finish(self) -> Function {
+    pub fn into_function(self) -> Function {
         self.func
     }
 
-    fn fresh(&mut self) -> ValueId {
+    pub fn function(&self) -> &Function {
+        &self.func
+    }
+
+    pub fn fresh(&mut self) -> ValueId {
         let id = self.next_id;
         self.next_id += 1;
         ValueId(id)
     }
 
-    pub fn input(&mut self, name: impl Into<String>, shape: Shape) -> Tensor {
-        self.param(name, shape, ParamKind::Input)
+    // ── Parameter creation ──────────────────────────────────────────
+
+    pub fn add_input(&mut self, name: String, shape: Shape) -> ValueId {
+        self.add_param(name, shape, ParamKind::Input)
     }
 
-    pub fn weight(&mut self, name: impl Into<String>, shape: Shape) -> Tensor {
-        self.param(name, shape, ParamKind::Weight)
+    pub fn add_weight(&mut self, name: String, shape: Shape) -> ValueId {
+        self.add_param(name, shape, ParamKind::Weight)
     }
 
-    fn param(&mut self, name: impl Into<String>, shape: Shape, kind: ParamKind) -> Tensor {
+    fn add_param(&mut self, name: String, shape: Shape, kind: ParamKind) -> ValueId {
         let id = self.fresh();
         self.func.params.push(Param {
-            name: name.into(),
-            shape: shape.clone(),
+            name,
+            shape,
             value: id,
             kind,
         });
-        Tensor::new(shape, id)
+        id
     }
 
-    /// Set the function return value.
-    pub fn ret(&mut self, t: &Tensor) {
-        self.func.ret = Some(t.value);
+    pub fn set_return(&mut self, val: ValueId) {
+        self.func.returns = vec![val];
     }
 
-    /// 2D matmul using stablehlo.dot_general.
-    ///
-    /// Scope: only supports:
-    ///   x: [B, In], w: [In, Out]  =>  y: [B, Out]
-    pub fn matmul_2d(&mut self, x: &Tensor, w: &Tensor) -> Result<Tensor, Error> {
-        const OP: &str = "matmul_2d";
+    pub fn set_returns(&mut self, vals: Vec<ValueId>) {
+        self.func.returns = vals;
+    }
 
-        if x.dtype() != w.dtype() {
-            return Err(Error::dtype(OP, x.dtype(), w.dtype()));
-        }
-        if x.rank() != 2 {
-            return Err(Error::rank(OP, 2, x.rank()));
-        }
-        if w.rank() != 2 {
-            return Err(Error::rank(OP, 2, w.rank()));
+    // ── Broadcasting ────────────────────────────────────────────────
+
+    fn broadcast_pair(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId, ValueId), Error> {
+        if a_shape.dtype != b_shape.dtype {
+            return Err(Error::dtype("broadcast", a_shape.dtype, b_shape.dtype));
         }
 
-        let b = x.shape.dim(0);
-        let in_x = x.shape.dim(1);
-        let in_w = w.shape.dim(0);
-        let out = w.shape.dim(1);
+        let (out_shape, a_dims, b_dims) = compute_broadcast(a_shape, b_shape)?;
 
-        if in_x != in_w {
-            return Err(Error::DimMismatch {
-                op: OP,
-                axis_a: 1,
-                dim_a: in_x,
-                axis_b: 0,
-                dim_b: in_w,
+        let a_val = if a_shape.dims == out_shape.dims {
+            a_val
+        } else {
+            let result = self.fresh();
+            self.func.insts.push(Stmt {
+                result,
+                inst: Inst::BroadcastInDim(BroadcastInDim {
+                    operand: a_val,
+                    out: out_shape.clone(),
+                    dims: a_dims,
+                }),
             });
-        }
+            result
+        };
 
-        let out_shape = Shape::new(vec![b, out], x.dtype());
-        let result = self.fresh();
-
-        self.func.insts.push(Stmt {
-            result,
-            inst: Inst::DotGeneral(DotGeneral {
-                lhs: x.value,
-                rhs: w.value,
-                out: out_shape.clone(),
-                contracting_dims_lhs: vec![1],
-                contracting_dims_rhs: vec![0],
-                batching_dims_lhs: vec![],
-                batching_dims_rhs: vec![],
-            }),
-        });
-
-        Ok(Tensor::new(out_shape, result))
-    }
-
-    /// Broadcast a 1D bias [Out] into [B, Out] for adding to a matmul result.
-    ///
-    /// Scope: only supports:
-    ///   b: [Out]  =>  bb: [B, Out] with dims=[1]
-    pub fn broadcast_bias_1d(&mut self, b: &Tensor, batch: i64) -> Result<Tensor, Error> {
-        const OP: &str = "broadcast_bias_1d";
-
-        if b.rank() != 1 {
-            return Err(Error::rank(OP, 1, b.rank()));
-        }
-        let out = b.shape.dim(0);
-        let out_shape = Shape::new(vec![batch, out], b.dtype());
-        let result = self.fresh();
-
-        self.func.insts.push(Stmt {
-            result,
-            inst: Inst::BroadcastInDim(BroadcastInDim {
-                operand: b.value,
-                out: out_shape.clone(),
-                dims: vec![1],
-            }),
-        });
-
-        Ok(Tensor::new(out_shape, result))
-    }
-
-    /// Elementwise add. For now, shapes must match exactly.
-    pub fn add(&mut self, a: &Tensor, b: &Tensor) -> Result<Tensor, Error> {
-        const OP: &str = "add";
-
-        if a.dtype() != b.dtype() {
-            return Err(Error::DTypeMismatch {
-                op: OP,
-                a: a.dtype(),
-                b: b.dtype(),
+        let b_val = if b_shape.dims == out_shape.dims {
+            b_val
+        } else {
+            let result = self.fresh();
+            self.func.insts.push(Stmt {
+                result,
+                inst: Inst::BroadcastInDim(BroadcastInDim {
+                    operand: b_val,
+                    out: out_shape.clone(),
+                    dims: b_dims,
+                }),
             });
-        }
-        if a.shape != b.shape {
-            return Err(Error::shape(OP, &a.shape, &b.shape));
-        }
+            result
+        };
 
-        let out_shape = a.shape.clone();
+        Ok((out_shape, a_val, b_val))
+    }
+
+    // ── Binary ops (with auto-broadcast) ────────────────────────────
+
+    fn binary_op(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+        make_inst: fn(BinaryOp) -> Inst,
+    ) -> Result<(Shape, ValueId), Error> {
+        let (out_shape, a_val, b_val) = self.broadcast_pair(a_shape, a_val, b_shape, b_val)?;
         let result = self.fresh();
-
         self.func.insts.push(Stmt {
             result,
-            inst: Inst::Add(Add {
-                lhs: a.value,
-                rhs: b.value,
+            inst: make_inst(BinaryOp {
+                lhs: a_val,
+                rhs: b_val,
                 out: out_shape.clone(),
             }),
         });
-        Ok(Tensor::new(out_shape, result))
+        Ok((out_shape, result))
     }
 
-    /// Elementwise multiply. Shapes must match exactly.
-    pub fn mul(&mut self, a: &Tensor, b: &Tensor) -> Result<Tensor, Error> {
-        const OP: &str = "mul";
+    pub fn add(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        self.binary_op(a_shape, a_val, b_shape, b_val, Inst::Add)
+    }
 
-        if a.dtype() != b.dtype() {
-            return Err(Error::DTypeMismatch {
-                op: OP,
-                a: a.dtype(),
-                b: b.dtype(),
-            });
-        }
-        if a.shape != b.shape {
-            return Err(Error::shape(OP, &a.shape, &b.shape));
-        }
+    pub fn sub(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        self.binary_op(a_shape, a_val, b_shape, b_val, Inst::Subtract)
+    }
 
-        let out_shape = a.shape.clone();
+    pub fn mul(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        self.binary_op(a_shape, a_val, b_shape, b_val, Inst::Multiply)
+    }
+
+    pub fn div(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        self.binary_op(a_shape, a_val, b_shape, b_val, Inst::Divide)
+    }
+
+    pub fn maximum(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        self.binary_op(a_shape, a_val, b_shape, b_val, Inst::Maximum)
+    }
+
+    // ── Unary ops ───────────────────────────────────────────────────
+
+    fn unary_op(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        make_inst: fn(UnaryOp) -> Inst,
+    ) -> (Shape, ValueId) {
+        let out = shape.clone();
         let result = self.fresh();
-
         self.func.insts.push(Stmt {
             result,
-            inst: Inst::Multiply(Multiply {
-                lhs: a.value,
-                rhs: b.value,
-                out: out_shape.clone(),
+            inst: make_inst(UnaryOp {
+                operand: val,
+                out: out.clone(),
             }),
         });
-        Ok(Tensor::new(out_shape, result))
+        (out, result)
     }
 
-    /// SiLU activation: x * sigmoid(x).
-    /// Emits a logistic (sigmoid) followed by an elementwise multiply.
-    pub fn silu(&mut self, x: &Tensor) -> Result<Tensor, Error> {
-        let sig_shape = x.shape.clone();
-        let sig_result = self.fresh();
+    pub fn neg(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Negate)
+    }
+
+    pub fn exp(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Exponential)
+    }
+
+    pub fn log(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Log)
+    }
+
+    pub fn sqrt(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Sqrt)
+    }
+
+    pub fn rsqrt(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Rsqrt)
+    }
+
+    pub fn abs(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Abs)
+    }
+
+    pub fn tanh(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Tanh)
+    }
+
+    pub fn logistic(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Logistic)
+    }
+
+    // ── Composite activations ───────────────────────────────────────
+
+    pub fn silu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        let (sig_shape, sig_val) = self.logistic(shape, val);
+        let result = self.fresh();
         self.func.insts.push(Stmt {
-            result: sig_result,
-            inst: Inst::Logistic(Logistic {
-                operand: x.value,
+            result,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: val,
+                rhs: sig_val,
                 out: sig_shape.clone(),
             }),
         });
-        let sig = Tensor::new(sig_shape, sig_result);
-        self.mul(x, &sig)
+        (sig_shape, result)
     }
+
+    pub fn relu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        let zero_val = self.emit_constant(0.0, shape);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Maximum(BinaryOp {
+                lhs: val,
+                rhs: zero_val,
+                out: shape.clone(),
+            }),
+        });
+        (shape.clone(), result)
+    }
+
+    /// GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    pub fn gelu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        let half = self.emit_constant(0.5, shape);
+        let coeff = self.emit_constant(0.044715, shape);
+        let sqrt_2_over_pi = self.emit_constant(0.7978845608028654, shape);
+        let one = self.emit_constant(1.0, shape);
+
+        // x^3 = x * x * x
+        let x_sq = self.fresh();
+        self.func.insts.push(Stmt {
+            result: x_sq,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: val,
+                rhs: val,
+                out: shape.clone(),
+            }),
+        });
+        let x_cu = self.fresh();
+        self.func.insts.push(Stmt {
+            result: x_cu,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: x_sq,
+                rhs: val,
+                out: shape.clone(),
+            }),
+        });
+
+        // coeff * x^3
+        let cx3 = self.fresh();
+        self.func.insts.push(Stmt {
+            result: cx3,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: coeff,
+                rhs: x_cu,
+                out: shape.clone(),
+            }),
+        });
+
+        // x + coeff * x^3
+        let inner_sum = self.fresh();
+        self.func.insts.push(Stmt {
+            result: inner_sum,
+            inst: Inst::Add(BinaryOp {
+                lhs: val,
+                rhs: cx3,
+                out: shape.clone(),
+            }),
+        });
+
+        // sqrt(2/pi) * (x + coeff * x^3)
+        let scaled = self.fresh();
+        self.func.insts.push(Stmt {
+            result: scaled,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: sqrt_2_over_pi,
+                rhs: inner_sum,
+                out: shape.clone(),
+            }),
+        });
+
+        // tanh(...)
+        let (_, tanh_val) = self.tanh(shape, scaled);
+
+        // 1 + tanh(...)
+        let one_plus = self.fresh();
+        self.func.insts.push(Stmt {
+            result: one_plus,
+            inst: Inst::Add(BinaryOp {
+                lhs: one,
+                rhs: tanh_val,
+                out: shape.clone(),
+            }),
+        });
+
+        // 0.5 * x
+        let half_x = self.fresh();
+        self.func.insts.push(Stmt {
+            result: half_x,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: half,
+                rhs: val,
+                out: shape.clone(),
+            }),
+        });
+
+        // 0.5 * x * (1 + tanh(...))
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Multiply(BinaryOp {
+                lhs: half_x,
+                rhs: one_plus,
+                out: shape.clone(),
+            }),
+        });
+
+        (shape.clone(), result)
+    }
+
+    // ── Constants ───────────────────────────────────────────────────
+
+    pub fn constant(&mut self, value: f64, shape: &Shape) -> (Shape, ValueId) {
+        let val = self.emit_constant(value, shape);
+        (shape.clone(), val)
+    }
+
+    fn emit_constant(&mut self, value: f64, shape: &Shape) -> ValueId {
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Constant(Constant {
+                value,
+                out: shape.clone(),
+            }),
+        });
+        result
+    }
+
+    // ── Shape manipulation ──────────────────────────────────────────
+
+    pub fn reshape(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        new_dims: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        let old_numel: i64 = shape.dims.iter().product();
+        let new_numel: i64 = new_dims.iter().product();
+        if old_numel != new_numel {
+            return Err(Error::InvalidParam {
+                msg: format!("reshape: element count mismatch (old={old_numel}, new={new_numel})"),
+            });
+        }
+        let out_shape = Shape::new(new_dims.to_vec(), shape.dtype);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Reshape(UnaryOp {
+                operand: val,
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    pub fn transpose(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        permutation: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        if permutation.len() != shape.rank() {
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "transpose: permutation length {} != rank {}",
+                    permutation.len(),
+                    shape.rank()
+                ),
+            });
+        }
+        let out_dims: Vec<i64> = permutation
+            .iter()
+            .map(|&p| shape.dims[p as usize])
+            .collect();
+        let out_shape = Shape::new(out_dims, shape.dtype);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Transpose(TransposeOp {
+                operand: val,
+                permutation: permutation.to_vec(),
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    // ── Reductions ──────────────────────────────────────────────────
+
+    fn reduce(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        axes: &[i64],
+        kind: ReduceKind,
+    ) -> Result<(Shape, ValueId), Error> {
+        let rank = shape.rank();
+        let mut normalized_axes = Vec::with_capacity(axes.len());
+        for &axis in axes {
+            let a = normalize_axis(axis, rank)?;
+            normalized_axes.push(a as i64);
+        }
+
+        let mut out_dims = Vec::new();
+        for (i, &d) in shape.dims.iter().enumerate() {
+            if !normalized_axes.contains(&(i as i64)) {
+                out_dims.push(d);
+            }
+        }
+        let out_shape = Shape::new(out_dims, shape.dtype);
+
+        let init_value = match kind {
+            ReduceKind::Sum => 0.0_f64,
+            ReduceKind::Max => f64::NEG_INFINITY,
+            ReduceKind::Min => f64::INFINITY,
+        };
+        let init_shape = Shape::new(vec![], shape.dtype);
+        let init_id = self.emit_constant(init_value, &init_shape);
+
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Reduce(Reduce {
+                operand: val,
+                init_value: init_id,
+                dimensions: normalized_axes,
+                kind,
+                out: out_shape.clone(),
+            }),
+        });
+
+        Ok((out_shape, result))
+    }
+
+    pub fn reduce_sum(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        axes: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        self.reduce(shape, val, axes, ReduceKind::Sum)
+    }
+
+    pub fn reduce_max(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        axes: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        self.reduce(shape, val, axes, ReduceKind::Max)
+    }
+
+    pub fn reduce_min(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        axes: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        self.reduce(shape, val, axes, ReduceKind::Min)
+    }
+
+    // ── Matmul (N-dimensional) ──────────────────────────────────────
+
+    pub fn matmul(
+        &mut self,
+        x_shape: &Shape,
+        x_val: ValueId,
+        w_shape: &Shape,
+        w_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        const OP: &str = "matmul";
+
+        if x_shape.dtype != w_shape.dtype {
+            return Err(Error::dtype(OP, x_shape.dtype, w_shape.dtype));
+        }
+        if x_shape.rank() < 2 {
+            return Err(Error::rank(OP, 2, x_shape.rank()));
+        }
+        if w_shape.rank() < 2 {
+            return Err(Error::rank(OP, 2, w_shape.rank()));
+        }
+
+        let x_rank = x_shape.rank();
+        let w_rank = w_shape.rank();
+
+        let m = x_shape.dims[x_rank - 2];
+        let k_x = x_shape.dims[x_rank - 1];
+        let k_w = w_shape.dims[w_rank - 2];
+        let n = w_shape.dims[w_rank - 1];
+
+        if k_x != k_w {
+            return Err(Error::DimMismatch {
+                op: OP,
+                axis_a: x_rank - 1,
+                dim_a: k_x,
+                axis_b: w_rank - 2,
+                dim_b: k_w,
+            });
+        }
+
+        let x_batch = &x_shape.dims[..x_rank - 2];
+        let w_batch = &w_shape.dims[..w_rank - 2];
+
+        let (batch_out, actual_x_val, actual_w_val, eff_rank) = if x_batch == w_batch {
+            (x_batch.to_vec(), x_val, w_val, x_rank)
+        } else if w_batch.is_empty() {
+            let mut new_w_dims = x_batch.to_vec();
+            new_w_dims.push(k_w);
+            new_w_dims.push(n);
+            let new_w_shape = Shape::new(new_w_dims, w_shape.dtype);
+            let bcast_dims: Vec<i64> = vec![x_batch.len() as i64, (x_batch.len() + 1) as i64];
+            let bcast_id = self.fresh();
+            self.func.insts.push(Stmt {
+                result: bcast_id,
+                inst: Inst::BroadcastInDim(BroadcastInDim {
+                    operand: w_val,
+                    out: new_w_shape,
+                    dims: bcast_dims,
+                }),
+            });
+            (x_batch.to_vec(), x_val, bcast_id, x_rank)
+        } else if x_batch.is_empty() {
+            let mut new_x_dims = w_batch.to_vec();
+            new_x_dims.push(m);
+            new_x_dims.push(k_x);
+            let new_x_shape = Shape::new(new_x_dims, x_shape.dtype);
+            let bcast_dims: Vec<i64> = vec![w_batch.len() as i64, (w_batch.len() + 1) as i64];
+            let bcast_id = self.fresh();
+            self.func.insts.push(Stmt {
+                result: bcast_id,
+                inst: Inst::BroadcastInDim(BroadcastInDim {
+                    operand: x_val,
+                    out: new_x_shape,
+                    dims: bcast_dims,
+                }),
+            });
+            (w_batch.to_vec(), bcast_id, w_val, w_rank)
+        } else {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "incompatible batch dimensions for matmul",
+            });
+        };
+
+        let mut out_dims = batch_out;
+        out_dims.push(m);
+        out_dims.push(n);
+        let out_shape = Shape::new(out_dims, x_shape.dtype);
+
+        let batching: Vec<i64> = (0..eff_rank as i64 - 2).collect();
+        let contracting_lhs = vec![(eff_rank - 1) as i64];
+        let contracting_rhs = vec![(eff_rank - 2) as i64];
+
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::DotGeneral(DotGeneral {
+                lhs: actual_x_val,
+                rhs: actual_w_val,
+                out: out_shape.clone(),
+                contracting_dims_lhs: contracting_lhs,
+                contracting_dims_rhs: contracting_rhs,
+                batching_dims_lhs: batching.clone(),
+                batching_dims_rhs: batching,
+            }),
+        });
+
+        Ok((out_shape, result))
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+fn compute_broadcast(a: &Shape, b: &Shape) -> Result<(Shape, Vec<i64>, Vec<i64>), Error> {
+    let a_dims = &a.dims;
+    let b_dims = &b.dims;
+    let out_rank = a_dims.len().max(b_dims.len());
+
+    let a_offset = out_rank - a_dims.len();
+    let b_offset = out_rank - b_dims.len();
+
+    let mut out_dims = Vec::with_capacity(out_rank);
+    for i in 0..out_rank {
+        let ad = if i >= a_offset {
+            a_dims[i - a_offset]
+        } else {
+            1
+        };
+        let bd = if i >= b_offset {
+            b_dims[i - b_offset]
+        } else {
+            1
+        };
+
+        if ad != bd && ad != 1 && bd != 1 {
+            return Err(Error::BroadcastError {
+                a: a.clone(),
+                b: b.clone(),
+            });
+        }
+        out_dims.push(ad.max(bd));
+    }
+
+    let a_map: Vec<i64> = (0..a_dims.len()).map(|i| (i + a_offset) as i64).collect();
+    let b_map: Vec<i64> = (0..b_dims.len()).map(|i| (i + b_offset) as i64).collect();
+
+    Ok((Shape::new(out_dims, a.dtype), a_map, b_map))
+}
+
+fn normalize_axis(axis: i64, rank: usize) -> Result<usize, Error> {
+    let rank_i = rank as i64;
+    let normalized = if axis < 0 { axis + rank_i } else { axis };
+    if normalized < 0 || normalized >= rank_i {
+        return Err(Error::InvalidParam {
+            msg: format!("axis {axis} out of range for rank {rank}"),
+        });
+    }
+    Ok(normalized as usize)
 }

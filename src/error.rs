@@ -1,19 +1,14 @@
-// defines a small Error enum for shape/dtype mismatches and “unsupported for this exercise” cases.
-
 use core::fmt;
 
 use crate::{dtype::DType, shape::Shape};
 
-/// Errors from building/typing our tiny StableHLO graph.
 #[derive(Debug, Clone)]
 pub enum Error {
-    /// Expected a tensor of a specific rank.
     RankMismatch {
         op: &'static str,
         expected: usize,
         got: usize,
     },
-    /// Dimension mismatch, e.g. matmul inner dims don't match.
     DimMismatch {
         op: &'static str,
         axis_a: usize,
@@ -21,19 +16,20 @@ pub enum Error {
         axis_b: usize,
         dim_b: i64,
     },
-    /// Dtype mismatch (for now enforce equal dtypes).
     DTypeMismatch {
         op: &'static str,
         a: DType,
         b: DType,
     },
-    /// Shapes must match exactly (keep add strict for now).
     ShapeMismatch {
         op: &'static str,
         a: Shape,
         b: Shape,
     },
-    /// Mismatch between safetensor file and module struct
+    BroadcastError {
+        a: Shape,
+        b: Shape,
+    },
     MissingWeight {
         key: String,
     },
@@ -41,11 +37,16 @@ pub enum Error {
         key: String,
         dtype: String,
     },
-    /// A feature intentionally not implement in yet.
     Unsupported {
         op: &'static str,
         msg: &'static str,
     },
+    GraphMismatch,
+    InvalidParam {
+        msg: String,
+    },
+    RuntimeError(String),
+    CompilationError(String),
 }
 
 impl Error {
@@ -57,6 +58,7 @@ impl Error {
         Error::DTypeMismatch { op, a, b }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn shape(op: &'static str, a: &Shape, b: &Shape) -> Self {
         Error::ShapeMismatch {
             op,
@@ -90,6 +92,9 @@ impl fmt::Display for Error {
             Error::ShapeMismatch { op, a, b } => {
                 write!(f, "{op}: shape mismatch ({a} vs {b})")
             }
+            Error::BroadcastError { a, b } => {
+                write!(f, "cannot broadcast shapes {a} and {b}")
+            }
             Error::MissingWeight { key } => {
                 write!(f, "missing weight {:?}", key)
             }
@@ -99,6 +104,17 @@ impl fmt::Display for Error {
             Error::Unsupported { op, msg } => {
                 write!(f, "{op}: unsupported ({msg})")
             }
+            Error::GraphMismatch => {
+                write!(
+                    f,
+                    "cannot combine tensors from different computation graphs"
+                )
+            }
+            Error::InvalidParam { msg } => {
+                write!(f, "invalid parameter: {msg}")
+            }
+            Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
+            Error::CompilationError(msg) => write!(f, "compilation error: {msg}"),
         }
     }
 }

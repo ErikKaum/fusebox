@@ -1,8 +1,8 @@
-// src/signature.rs
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::dtype::DType;
+use crate::error::Error;
 use crate::ir::{Function, ParamKind};
 use crate::shape::Shape;
 use crate::value::ValueId;
@@ -17,8 +17,8 @@ pub struct ParamSpec {
 
 #[derive(Debug, Clone)]
 pub struct Signature {
-    params: Vec<ParamSpec>,            // in parameter order
-    by_name: HashMap<String, usize>,   // name -> index
+    params: Vec<ParamSpec>,
+    by_name: HashMap<String, usize>,
 }
 
 impl Signature {
@@ -37,10 +37,7 @@ impl Signature {
             params.push(spec);
         }
 
-        Self {
-            params,
-            by_name,
-        }
+        Self { params, by_name }
     }
 
     pub fn params(&self) -> &[ParamSpec] {
@@ -61,13 +58,12 @@ impl Signature {
 }
 
 #[derive(Clone)]
-pub struct InputsF32 {
+pub struct Inputs {
     sig: Arc<Signature>,
-    // one entry per param, same order
     values: Vec<Option<Vec<f32>>>,
 }
 
-impl InputsF32 {
+impl Inputs {
     pub fn new(sig: Arc<Signature>) -> Self {
         let n = sig.params().len();
         Self {
@@ -80,69 +76,81 @@ impl InputsF32 {
         &self.sig
     }
 
-    pub fn set(&mut self, name: &str, data: Vec<f32>) -> Result<(), String> {
+    pub fn set(&mut self, name: &str, data: Vec<f32>) -> Result<(), Error> {
         let idx = self
             .sig
             .index_of_name(name)
-            .ok_or_else(|| format!("unknown input name {:?}", name))?;
+            .ok_or_else(|| Error::InvalidParam {
+                msg: format!("unknown parameter {:?}", name),
+            })?;
         self.set_idx(idx, data)
     }
 
-    pub fn set_input(&mut self, name: &str, data: Vec<f32>) -> Result<(), String> {
+    pub fn set_input(&mut self, name: &str, data: Vec<f32>) -> Result<(), Error> {
         let idx = self
             .sig
             .index_of_name(name)
-            .ok_or_else(|| format!("unknown input {:?}", name))?;
+            .ok_or_else(|| Error::InvalidParam {
+                msg: format!("unknown input {:?}", name),
+            })?;
         if self.sig.spec(idx).kind == ParamKind::Weight {
-            return Err(format!("cannot set weight {:?} via set_input()", name));
+            return Err(Error::InvalidParam {
+                msg: format!("cannot set weight {:?} via set_input()", name),
+            });
         }
         self.set(name, data)
     }
 
-    fn set_idx(&mut self, idx: usize, data: Vec<f32>) -> Result<(), String> {
+    fn set_idx(&mut self, idx: usize, data: Vec<f32>) -> Result<(), Error> {
         let spec = self.sig.spec(idx);
 
         if spec.shape.dtype != DType::F32 {
-            return Err(format!(
-                "only f32 supported for now; param {:?} has dtype {}",
-                spec.name, spec.shape.dtype
-            ));
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "only f32 supported for now; param {:?} has dtype {}",
+                    spec.name, spec.shape.dtype
+                ),
+            });
         }
 
         let want = numel(&spec.shape)?;
         if data.len() as i128 != want {
-            return Err(format!(
-                "param {:?} expects shape {:?} ({} elements), got {}",
-                spec.name,
-                spec.shape.dims,
-                want,
-                data.len()
-            ));
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "param {:?} expects shape {:?} ({} elements), got {}",
+                    spec.name,
+                    spec.shape.dims,
+                    want,
+                    data.len()
+                ),
+            });
         }
 
         self.values[idx] = Some(data);
         Ok(())
     }
 
-    pub fn into_ordered(self) -> Result<Vec<(Shape, Vec<f32>)>, String> {
+    pub fn into_ordered(self) -> Result<Vec<(Shape, Vec<f32>)>, Error> {
         let sig = self.sig;
         let mut out = Vec::with_capacity(self.values.len());
         for (i, v) in self.values.into_iter().enumerate() {
             let spec = sig.spec(i);
-            let data = v.ok_or_else(|| format!("missing value for param {:?}", spec.name))?;
+            let data = v.ok_or_else(|| Error::InvalidParam {
+                msg: format!("missing value for param {:?}", spec.name),
+            })?;
             out.push((spec.shape.clone(), data));
         }
         Ok(out)
     }
 }
 
-fn numel(shape: &Shape) -> Result<i128, String> {
-    // For now we require all dims to be >= 1 (no dynamic '?' and no zero dims).
-    // You can relax this later.
+fn numel(shape: &Shape) -> Result<i128, Error> {
     let mut prod: i128 = 1;
     for &d in &shape.dims {
         if d <= 0 {
-            return Err(format!("unsupported dim {} in shape {:?}", d, shape.dims));
+            return Err(Error::InvalidParam {
+                msg: format!("unsupported dim {} in shape {:?}", d, shape.dims),
+            });
         }
         prod *= d as i128;
     }

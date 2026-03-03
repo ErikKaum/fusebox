@@ -1,4 +1,7 @@
-use crate::{error::Error, ir::Function, tensor::Tensor, trace::TraceCx};
+use crate::error::Error;
+use crate::ir::Function;
+use crate::tensor::Tensor;
+use crate::trace::TraceCx;
 
 pub fn trace_function<F>(name: &str, build: F) -> Result<Function, Error>
 where
@@ -6,6 +9,7 @@ where
 {
     let mut cx = TraceCx::new(name);
     let out = build(&mut cx)?;
-    cx.ret(&out);
+    cx.set_ret(&out);
+    drop(out);
     Ok(cx.finish())
 }

@@ -1,4 +1,3 @@
-// src/safetensor_shapes.rs
 use std::collections::HashMap;
 
 use safetensors::SafeTensors;
@@ -11,13 +10,15 @@ pub struct SafeTensorShapes {
 }
 
 impl SafeTensorShapes {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let st = SafeTensors::deserialize(bytes)
-            .map_err(|e| format!("parse safetensors: {}", e))?;
+            .map_err(|e| Error::RuntimeError(format!("parse safetensors: {}", e)))?;
 
         let mut map = HashMap::new();
         for name in st.names() {
-            let tv = st.tensor(name).map_err(|e| format!("tensor {}: {}", name, e))?;
+            let tv = st
+                .tensor(name)
+                .map_err(|e| Error::RuntimeError(format!("tensor {}: {}", name, e)))?;
             let dims: Vec<i64> = tv.shape().iter().map(|&d| d as i64).collect();
 
             let dtype = match tv.dtype() {
@@ -25,7 +26,10 @@ impl SafeTensorShapes {
                 safetensors::Dtype::F16 => DType::F16,
                 safetensors::Dtype::BF16 => DType::BF16,
                 other => {
-                    return Err(format!("unsupported dtype {:?} for tensor {}", other, name));
+                    return Err(Error::UnsupportedDType {
+                        key: name.to_string(),
+                        dtype: format!("{:?}", other),
+                    });
                 }
             };
 

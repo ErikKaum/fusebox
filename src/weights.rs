@@ -2,32 +2,30 @@ use std::collections::HashMap;
 
 use safetensors::{Dtype as SdType, SafeTensors};
 
+use crate::error::Error;
 use crate::ir::ParamKind;
-use crate::signature::Signature;
+use crate::signature::{Inputs, Signature};
 
 #[derive(Debug, Clone)]
-pub struct WeightsF32 {
+pub struct Weights {
     data: HashMap<String, Vec<f32>>,
 }
 
-impl WeightsF32 {
-    pub fn from_safetensors_for_weights_bytes(
-        bytes: &[u8],
-        sig: &Signature,
-    ) -> Result<Self, String> {
+impl Weights {
+    pub fn from_safetensors_bytes(bytes: &[u8], sig: &Signature) -> Result<Self, Error> {
         let st = SafeTensors::deserialize(bytes)
-            .map_err(|e| format!("parse safetensors: {}", e))?;
+            .map_err(|e| Error::RuntimeError(format!("parse safetensors: {}", e)))?;
         Self::from_safetensors_inner(&st, sig)
     }
 
-    pub fn apply_ref(&self, bindings: &mut crate::signature::InputsF32) -> Result<(), String> {
+    pub fn apply_ref(&self, bindings: &mut Inputs) -> Result<(), Error> {
         for (name, data) in &self.data {
             bindings.set(name, data.clone())?;
         }
         Ok(())
     }
 
-    fn from_safetensors_inner(st: &SafeTensors, sig: &Signature) -> Result<Self, String> {
+    fn from_safetensors_inner(st: &SafeTensors, sig: &Signature) -> Result<Self, Error> {
         let mut out = HashMap::new();
 
         for p in sig.params() {
@@ -35,38 +33,36 @@ impl WeightsF32 {
                 continue;
             }
 
-            let tv = st
-                .tensor(&p.name)
-                .map_err(|e| format!("missing weight {:?} in safetensors: {}", p.name, e))?;
+            let tv = st.tensor(&p.name).map_err(|e| {
+                Error::RuntimeError(format!("missing weight {:?} in safetensors: {}", p.name, e))
+            })?;
 
             if tv.dtype() != SdType::F32 {
-                return Err(format!(
-                    "weight {:?} has dtype {:?}, expected F32",
-                    p.name,
-                    tv.dtype()
-                ));
+                return Err(Error::UnsupportedDType {
+                    key: p.name.clone(),
+                    dtype: format!("{:?}", tv.dtype()),
+                });
             }
 
             let file_shape: Vec<i64> = tv.shape().iter().map(|&d| d as i64).collect();
             if file_shape != p.shape.dims {
-                return Err(format!(
+                return Err(Error::RuntimeError(format!(
                     "weight {:?} shape mismatch: file={:?}, expected={:?}",
                     p.name, file_shape, p.shape.dims
-                ));
+                )));
             }
 
             let raw = tv.data();
-            let vals =
-                bytes_to_f32_le(raw).map_err(|e| format!("weight {:?}: {}", p.name, e))?;
+            let vals = bytes_to_f32_le(raw)?;
 
             let want = p.shape.dims.iter().map(|&d| d as i128).product::<i128>();
             if vals.len() as i128 != want {
-                return Err(format!(
+                return Err(Error::RuntimeError(format!(
                     "weight {:?} element count mismatch: got={}, expected={}",
                     p.name,
                     vals.len(),
                     want
-                ));
+                )));
             }
 
             out.insert(p.name.clone(), vals);
@@ -76,9 +72,12 @@ impl WeightsF32 {
     }
 }
 
-fn bytes_to_f32_le(bytes: &[u8]) -> Result<Vec<f32>, String> {
+fn bytes_to_f32_le(bytes: &[u8]) -> Result<Vec<f32>, Error> {
     if bytes.len() % 4 != 0 {
-        return Err(format!("byte length {} not divisible by 4", bytes.len()));
+        return Err(Error::RuntimeError(format!(
+            "byte length {} not divisible by 4",
+            bytes.len()
+        )));
     }
     let mut out = Vec::with_capacity(bytes.len() / 4);
     for chunk in bytes.chunks_exact(4) {
