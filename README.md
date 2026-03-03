@@ -1,10 +1,24 @@
 # Fusebox
 
-Trace-based tensor compiler for Rust. Build computation graphs with a familiar tensor API, lower them to [StableHLO](https://github.com/openxla/stablehlo) MLIR, and execute through [PJRT](https://github.com/jax-ml/jax/tree/main/jax/_src/lib/pjrt) on CPU, GPU, or TPU.
+Trace-based tensor compiler for Rust. Build computation graphs with a familiar tensor API, lower them to [StableHLO](https://github.com/openxla/stablehlo) MLIR, and execute through [PJRT](https://github.com/openxla/xla/tree/main/xla/pjrt) on CPU.
 
 ## Background
 
-Fusebox started as an exercise in understanding how [ZML](https://github.com/zml/zml) works under the hood — the idea was to rebuild the core trace-compile-run loop from scratch in Rust and see what it actually takes to go from tensor ops to running hardware. What began as a learning project turned into something genuinely fun to hack on, and it kept growing from there.
+Fusebox started as an exercise in understanding how [ZML](https://github.com/zml/zml) works under the hood, the idea was to rebuild the core trace-compile-run loop from scratch in Rust and see what it actually takes to go from tensor ops to running hardware. What began as a learning project turned into something genuinely fun to hack on, and it kept growing from there.
+
+It even runs the `SmolLM2-135M-Instruct` model on CPU:
+
+```bash
+./target/release/examples/smollm2 chat --compiled examples/smollm2/artifacts/smollm2.compiled
+Loaded compiled model in 97.97ms
+Loaded weights in 91.29ms
+
+SmolLM2-135M-Instruct ready. Type a message and press Enter. Type "exit" to quit.
+
+You> Where is L'Arc de Triomphe located?
+Assistant> The Arc de Triomphe is located in the heart of Paris, France. It is a monumental arch that spans the entire length of the Eiffel Tower, connecting the top of the tower to the ground below. The Arc de Triomphe is a symbol of Paris and a popular tourist attraction.
+[32 prompt tokens, 60 generated | TTFT 292ms | 4.8 tok/s]
+```
 
 ## How it works
 
