@@ -1,6 +1,8 @@
 use core::fmt;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DType {
     F16,
     BF16,

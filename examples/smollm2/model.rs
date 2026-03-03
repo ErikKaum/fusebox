@@ -174,57 +174,36 @@ pub struct SmolLM2Model {
     pub norm: RmsNorm,
 }
 
-// ── Main ────────────────────────────────────────────────────────────
+// ── Trace helper ────────────────────────────────────────────────────
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ckpt = Checkpoint::from_file("smollm2-135m.safetensors")?;
-    let device = Device::cpu();
+/// Trace the full SmolLM2 graph. Returns the argmax token id at the last
+/// sequence position (shape: [batch], dtype: i32).
+pub fn trace_smollm2(
+    cx: &mut TraceCx,
+    shapes: &dyn ShapeProvider,
+    batch: i64,
+    seq: i64,
+) -> Result<Tensor, Error> {
+    let tokens = cx.input("tokens", Shape::new(vec![batch, seq], DType::I32));
 
-    let batch: i64 = 1;
-    let seq: i64 = 64;
+    let model = SmolLM2Model::trace(cx, "model", shapes)?;
+    let mut h = model.embed_tokens.forward(&tokens)?;
 
-    let t0 = std::time::Instant::now();
-    let runner = device.compile("smollm2", |cx| {
-        let tokens = cx.input("tokens", Shape::new(vec![batch, seq], DType::I32));
+    let (cos, sin) = build_rope(cx, seq)?;
+    let mask = build_causal_mask(cx, seq)?;
 
-        let model = SmolLM2Model::trace(cx, "model", ckpt.shapes())?;
-        let mut h = model.embed_tokens.forward(&tokens)?;
+    for layer in &model.layers {
+        h = layer.forward(&h, &cos, &sin, &mask, batch, seq)?;
+    }
 
-        let (cos, sin) = build_rope(cx, seq)?;
-        let mask = build_causal_mask(cx, seq)?;
+    h = model.norm.forward_with_eps(&h, RMS_EPS)?;
 
-        for layer in &model.layers {
-            h = layer.forward(&h, &cos, &sin, &mask, batch, seq)?;
-        }
+    // Tied weights: lm_head shares embed_tokens.weight.
+    let lm_weight_t = model.embed_tokens.weight.transpose(&[1, 0])?;
+    let logits = h.matmul(&lm_weight_t)?;
 
-        h = model.norm.forward_with_eps(&h, RMS_EPS)?;
+    let last_logits = logits.narrow(1, seq - 1, 1)?.squeeze(1)?;
+    let next_token = last_logits.argmax(-1)?;
 
-        // Tied weights: lm_head shares embed_tokens.weight.
-        // embed_tokens.weight is [vocab, hidden] which is already [out, in],
-        // so we transpose and matmul just like Linear::forward.
-        let lm_weight_t = model.embed_tokens.weight.transpose(&[1, 0])?;
-        let logits = h.matmul(&lm_weight_t)?;
-
-        let last_logits = logits.narrow(1, seq - 1, 1)?.squeeze(1)?;
-        let next_token = last_logits.argmax(-1)?;
-
-        Ok(next_token)
-    })?;
-    println!("compiled model in {:.2?}", t0.elapsed());
-
-    let t0 = std::time::Instant::now();
-    let weights = ckpt.load_weights(runner.signature())?;
-    println!("loaded weights in {:.2?}", t0.elapsed());
-
-    let sess = runner.session(weights);
-
-    let input_tokens: Vec<i32> = vec![1; (batch * seq) as usize];
-
-    let t0 = std::time::Instant::now();
-    let y = sess.run(|inputs| inputs.set_input_i32("tokens", input_tokens.clone()))?;
-    println!("inference in {:.2?}", t0.elapsed());
-
-    println!("predicted next token: {:?}", y.to_i32().unwrap());
-
-    Ok(())
+    Ok(next_token)
 }

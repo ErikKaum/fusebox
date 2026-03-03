@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dtype::DType;
 use crate::error::Error;
 use crate::ir::{Function, ParamKind};
 use crate::shape::Shape;
 use crate::value::ValueId;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamSpec {
     pub name: String,
     pub shape: Shape,
@@ -15,7 +17,7 @@ pub struct ParamSpec {
     pub kind: ParamKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
     params: Vec<ParamSpec>,
     by_name: HashMap<String, usize>,

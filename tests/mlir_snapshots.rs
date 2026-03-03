@@ -6,6 +6,9 @@ use fusebox::tensor::Tensor;
 use fusebox::trace::TraceCx;
 use fusebox::trace_fn::trace_function;
 
+use std::io::Write;
+use std::process::Command;
+
 fn f32_shape(dims: &[i64]) -> Shape {
     Shape::new(dims.to_vec(), DType::F32)
 }
@@ -22,22 +25,25 @@ fn trace_to_mlir(name: &str, f: impl FnOnce(&mut TraceCx) -> Tensor) -> String {
     print_module(&module)
 }
 
-fn assert_mlir_fixture(fixture_name: &str, actual: &str) {
-    let fixture_path = format!("tests/fixtures/{}", fixture_name);
-    let expected = std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
-        panic!(
-            "Cannot read fixture {}: {}\n\
-             Regenerate fixtures with: just update-fixtures\n\
-             Actual MLIR:\n{}",
-            fixture_path, e, actual
-        )
-    });
-    assert_eq!(
-        actual.trim(),
-        expected.trim(),
-        "\nMLIR mismatch for fixture: {}\n\
-         Regenerate fixtures with: just update-fixtures",
-        fixture_name
+fn validate_mlir(mlir: &str) {
+    let bin = std::env::var("STABLEHLO_OPT")
+        .expect("STABLEHLO_OPT env var must point to the stablehlo-opt binary");
+
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(mlir.as_bytes()).unwrap();
+
+    let output = Command::new(&bin)
+        .arg(tmp.path())
+        .arg("-o")
+        .arg("/dev/null")
+        .output()
+        .expect("failed to run stablehlo-opt");
+
+    assert!(
+        output.status.success(),
+        "stablehlo-opt rejected MLIR:\n{}\nstderr: {}",
+        mlir,
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -48,7 +54,7 @@ fn binary_broadcast() {
         let b = cx.input("b", f32_shape(&[4]));
         a.add(&b).unwrap()
     });
-    assert_mlir_fixture("binary_broadcast.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -57,7 +63,7 @@ fn unary_chain() {
         let a = cx.input("a", f32_shape(&[2, 3]));
         a.exp().log().tanh()
     });
-    assert_mlir_fixture("unary_chain.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -67,7 +73,7 @@ fn matmul_batched() {
         let b = cx.input("b", f32_shape(&[4, 5]));
         a.matmul(&b).unwrap()
     });
-    assert_mlir_fixture("matmul_batched.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -76,7 +82,7 @@ fn reduce_keepdim() {
         let a = cx.input("a", f32_shape(&[3, 4, 5]));
         a.sum_keepdim(&[1]).unwrap()
     });
-    assert_mlir_fixture("reduce_keepdim.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -85,7 +91,7 @@ fn softmax_graph() {
         let a = cx.input("a", f32_shape(&[2, 4]));
         a.softmax(-1).unwrap()
     });
-    assert_mlir_fixture("softmax.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -96,7 +102,7 @@ fn concat_slice() {
         let cat = Tensor::cat(&[&a, &b], 0).unwrap();
         cat.narrow(0, 1, 3).unwrap()
     });
-    assert_mlir_fixture("concat_slice.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -108,7 +114,7 @@ fn compare_select() {
         let mask = a.gt(&b).unwrap();
         Tensor::select(&mask, &a, &zero).unwrap()
     });
-    assert_mlir_fixture("compare_select.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -118,7 +124,7 @@ fn scalar_ops() {
         let b = (&a * 2.0).unwrap();
         (&b + 1.0).unwrap()
     });
-    assert_mlir_fixture("scalar_ops.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -132,7 +138,7 @@ fn iota_graph() {
         functions: vec![func],
     };
     let mlir = print_module(&module);
-    assert_mlir_fixture("iota.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -142,7 +148,7 @@ fn gather_graph() {
         let indices = cx.input("idx", Shape::new(vec![8], DType::I32));
         table.gather(&indices).unwrap()
     });
-    assert_mlir_fixture("gather.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -151,7 +157,7 @@ fn argmax_graph() {
         let a = cx.input("a", f32_shape(&[2, 3, 4]));
         a.argmax(-1).unwrap()
     });
-    assert_mlir_fixture("argmax.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -162,7 +168,7 @@ fn cos_sin_graph() {
         let s = a.sin();
         (&c + &s).unwrap()
     });
-    assert_mlir_fixture("cos_sin.mlir", &mlir);
+    validate_mlir(&mlir);
 }
 
 #[test]
@@ -176,5 +182,5 @@ fn convert_graph() {
         functions: vec![func],
     };
     let mlir = print_module(&module);
-    assert_mlir_fixture("convert.mlir", &mlir);
+    validate_mlir(&mlir);
 }

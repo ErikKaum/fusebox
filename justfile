@@ -5,7 +5,7 @@ build:
     cargo build
 
 test:
-    cargo test
+    STABLEHLO_OPT=/Users/erikkaum/Documents/testing/stablehlo/bazel-bin/stablehlo-opt cargo test
 
 clippy:
     cargo clippy -- -D warnings
@@ -18,26 +18,8 @@ fmt-check:
 
 ci: fmt-check clippy test
 
-update-fixtures:
-    cargo run --bin generate-fixtures
-
-gen:
-    cargo run --example linear > ./forward.mlir
-
-check: gen
-    /Users/erikkaum/Documents/testing/stablehlo/bazel-bin/stablehlo-opt ./forward.mlir -o /dev/null
-
-serialize:
-    /Users/erikkaum/Documents/testing/stablehlo/bazel-bin/stablehlo-translate --serialize ./forward.mlir --target=1.0.0 > ./forward.stablehlo.bc
-
-deserialize:
-    /Users/erikkaum/Documents/testing/stablehlo/bazel-bin/stablehlo-translate --deserialize ./forward.stablehlo.bc
-
 download-smollm2:
-    uv run download-smollm2.py
-
-run-smollm2:
-    cargo run --release --example smollm2
+    uv run examples/smollm2/download-smollm2.py
 
 download-pjrt:
     curl -L https://github.com/zml/pjrt-artifacts/releases/download/v0.2.2/pjrt-cpu_darwin-arm64.tar.gz -o pjrt-cpu.tar.gz

@@ -1,4 +1,5 @@
 use core::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -190,6 +191,59 @@ impl CompiledModel {
         }
 
         execute_and_extract(&self.exec, device_inputs)
+    }
+
+    /// Serialize the compiled executable and signature to a file.
+    ///
+    /// Format: [8-byte LE sig length] [signature JSON] [PJRT executable bytes]
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        let sig_bytes = serde_json::to_vec(&*self.sig)
+            .map_err(|e| Error::SerializationError(format!("serialize signature: {}", e)))?;
+
+        let executable = self.exec.executable();
+        let serialized = executable.serialize();
+        let exec_bytes = serialized.bytes();
+
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(&(sig_bytes.len() as u64).to_le_bytes())?;
+        file.write_all(&sig_bytes)?;
+        file.write_all(exec_bytes)?;
+
+        Ok(())
+    }
+
+    /// Load a previously saved compiled model from bytes.
+    ///
+    /// The `client` must use the same PJRT backend that was used to compile.
+    pub(crate) fn from_bytes(client: Client, data: &[u8]) -> Result<Self, Error> {
+        if data.len() < 8 {
+            return Err(Error::SerializationError(
+                "file too small to contain header".to_string(),
+            ));
+        }
+
+        let sig_len =
+            u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+
+        if data.len() < 8 + sig_len {
+            return Err(Error::SerializationError(
+                "file truncated: signature data missing".to_string(),
+            ));
+        }
+
+        let sig: Signature = serde_json::from_slice(&data[8..8 + sig_len])
+            .map_err(|e| Error::SerializationError(format!("deserialize signature: {}", e)))?;
+
+        let exec_bytes = &data[8 + sig_len..];
+        let exec = client
+            .load_executable(exec_bytes)
+            .map_err(|e| Error::SerializationError(format!("load executable: {}", e)))?;
+
+        Ok(Self {
+            client,
+            exec,
+            sig: Arc::new(sig),
+        })
     }
 }
 

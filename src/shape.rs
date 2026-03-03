@@ -2,9 +2,11 @@
 
 use core::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dtype::DType;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Shape {
     /// Dimension sizes. Empty = rank-0 tensor.
     ///

@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use pjrt::Client;
 
 use crate::error::Error;
 use crate::ir::{Function, ParamKind};
@@ -45,6 +47,36 @@ impl Device {
             eprintln!("{}", crate::print_mlir::print_module(&module));
         }
         CompiledModel::from_function(&func, &self.plugin_path)
+    }
+
+    /// Load a previously saved compiled model from disk.
+    ///
+    /// The model must have been compiled for the same backend (e.g. CPU plugin)
+    /// that this `Device` is configured with.
+    pub fn load(&self, path: impl AsRef<Path>) -> Result<CompiledModel, Error> {
+        let data = std::fs::read(path.as_ref())?;
+        let client = self.make_client()?;
+        CompiledModel::from_bytes(client, &data)
+    }
+
+    fn make_client(&self) -> Result<Client, Error> {
+        let plugin_str = self.plugin_path.to_str().ok_or_else(|| {
+            Error::CompilationError(format!(
+                "plugin path {:?} is not valid UTF-8",
+                self.plugin_path
+            ))
+        })?;
+
+        let api = pjrt::plugin(plugin_str).load().map_err(|e| {
+            Error::CompilationError(format!(
+                "load PJRT plugin {:?}: {}",
+                self.plugin_path, e
+            ))
+        })?;
+
+        Client::builder(&api)
+            .build()
+            .map_err(|e| Error::CompilationError(format!("create PJRT client: {}", e)))
     }
 }
 

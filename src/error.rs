@@ -48,6 +48,8 @@ pub enum Error {
     RuntimeError(String),
     CompilationError(String),
     ValidationError(String),
+    IoError(String),
+    SerializationError(String),
     Scoped {
         scope: String,
         inner: Box<Error>,
@@ -132,6 +134,8 @@ impl fmt::Display for Error {
             Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
             Error::CompilationError(msg) => write!(f, "compilation error: {msg}"),
             Error::ValidationError(msg) => write!(f, "validation error: {msg}"),
+            Error::IoError(msg) => write!(f, "io error: {msg}"),
+            Error::SerializationError(msg) => write!(f, "serialization error: {msg}"),
             Error::Scoped { scope, inner } => {
                 write!(f, "in {scope}: {inner}")
             }
@@ -140,3 +144,9 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::IoError(e.to_string())
+    }
+}

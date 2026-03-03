@@ -12,5 +12,4 @@ runner/stablehlo-runner
 
 .DS_Store
 
-transformer.safetensors
-smollm2-135m.safetensors
+examples/smollm2/artifacts

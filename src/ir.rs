@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{shape::Shape, value::ValueId};
 
 #[derive(Debug, Clone, Default)]
@@ -24,7 +26,7 @@ impl Function {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ParamKind {
     Input,
     Weight,
