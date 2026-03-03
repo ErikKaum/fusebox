@@ -200,10 +200,15 @@ fn chat(
         let prompt_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
 
         let mut context = prompt_ids;
+        let prompt_tokens = context.len();
         let mut generated = String::new();
+        let mut gen_tokens: usize = 0;
 
         print!("Assistant> ");
         stdout.flush()?;
+
+        let gen_start = Instant::now();
+        let mut first_token_dur = None;
 
         for _ in 0..max_tokens {
             let seq_len = seq as usize;
@@ -215,10 +220,16 @@ fn chat(
             })?;
 
             let next_token = result.to_i32().unwrap()[0];
+
+            if first_token_dur.is_none() {
+                first_token_dur = Some(gen_start.elapsed());
+            }
+
             if next_token == eos_id {
                 break;
             }
 
+            gen_tokens += 1;
             context.push(next_token);
 
             let piece = tokenizer
@@ -229,7 +240,18 @@ fn chat(
             stdout.flush()?;
         }
 
+        let total_dur = gen_start.elapsed();
         println!();
+
+        let ttft_ms = first_token_dur.map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let tps = if total_dur.as_secs_f64() > 0.0 {
+            gen_tokens as f64 / total_dur.as_secs_f64()
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[{prompt_tokens} prompt tokens, {gen_tokens} generated | TTFT {ttft_ms:.0}ms | {tps:.1} tok/s]"
+        );
 
         history.push_turn(user_input.to_string(), generated);
     }
