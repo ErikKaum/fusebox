@@ -1,3 +1,8 @@
+//! Tracing context — the entry point for building a computation graph.
+//!
+//! Create a [`TraceCx`], declare inputs and weights, perform tensor operations,
+//! then call [`TraceCx::finish`] to extract the completed [`Function`] IR.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -25,10 +30,12 @@ impl TraceCx {
         }
     }
 
+    /// Mark a tensor as the function's return value.
     pub fn set_ret(&mut self, t: &Tensor) {
         self.builder.borrow_mut().set_return(t.value);
     }
 
+    /// Consume the tracing context and return the completed IR function.
     pub fn finish(self) -> Function {
         match Rc::try_unwrap(self.builder) {
             Ok(cell) => cell.into_inner().into_function(),
@@ -36,6 +43,7 @@ impl TraceCx {
         }
     }
 
+    /// Declare a runtime input parameter (e.g. token ids, pixel data).
     pub fn input(&mut self, name: &str, shape: Shape) -> Tensor {
         let full = self.qualify(name);
         let mut b = self.builder.borrow_mut();
@@ -44,6 +52,7 @@ impl TraceCx {
         Tensor::new(shape, id, &self.builder)
     }
 
+    /// Declare a weight parameter (loaded from a checkpoint at runtime).
     pub fn weight(&mut self, name: &str, shape: Shape) -> Tensor {
         let full = self.qualify(name);
         let mut b = self.builder.borrow_mut();
@@ -52,6 +61,7 @@ impl TraceCx {
         Tensor::new(shape, id, &self.builder)
     }
 
+    /// Prepend the current scope prefix to a local name (e.g. "layers/0/attn/weight").
     pub fn qualify(&self, local: &str) -> String {
         if self.prefix.is_empty() {
             local.to_string()
@@ -60,6 +70,8 @@ impl TraceCx {
         }
     }
 
+    /// Push a hierarchical naming scope. Returns the previous prefix length
+    /// so it can be restored via [`pop_scope`](Self::pop_scope).
     pub fn push_scope(&mut self, scope: &str) -> usize {
         let prev_len = self.prefix.len();
         if self.prefix.is_empty() {
@@ -77,6 +89,7 @@ impl TraceCx {
         self.builder.borrow_mut().pop_scope();
     }
 
+    /// Create an iota tensor (sequential indices along `dimension`).
     pub fn iota(&mut self, shape: Shape, dimension: i64) -> Result<Tensor, Error> {
         let mut b = self.builder.borrow_mut();
         let (out_shape, value) = b.iota(&shape, dimension)?;

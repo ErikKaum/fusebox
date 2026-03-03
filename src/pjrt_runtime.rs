@@ -1,3 +1,10 @@
+//! PJRT-backed runtime: compile MLIR programs and execute them on hardware.
+//!
+//! The main types here are:
+//! - [`CompiledModel`] — a compiled PJRT executable paired with its parameter signature.
+//! - [`Session`] — a model + pre-bound weights, ready for repeated inference.
+//! - [`HostTensor`] / [`TensorData`] — concrete host-side tensor data returned from execution.
+
 use core::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,6 +23,7 @@ use crate::weights::Weights;
 
 // ── TensorData ──────────────────────────────────────────────────────
 
+/// Type-erased tensor payload (the raw element data without shape).
 #[derive(Debug, Clone)]
 pub enum TensorData {
     F32(Vec<f32>),
@@ -58,6 +66,8 @@ impl TensorData {
 
 // ── HostTensor ──────────────────────────────────────────────────────
 
+/// A concrete tensor living in host (CPU) memory — the result you get back
+/// after running a compiled model.
 #[derive(Debug, Clone)]
 pub struct HostTensor {
     pub dims: Vec<i64>,
@@ -107,18 +117,26 @@ impl fmt::Display for HostTensor {
 
 // ── CompiledModel ───────────────────────────────────────────────────
 
+/// A compiled PJRT executable + its parameter signature.
+///
+/// Created via [`Device::compile`](crate::device::Device::compile) or
+/// [`CompiledModel::from_function`]. Holds a PJRT client and loaded
+/// executable; call [`run`](Self::run) or create a [`Session`] for inference.
 pub struct CompiledModel {
     client: Client,
     exec: LoadedExecutable,
     sig: Arc<Signature>,
 }
 
+/// A model with pre-bound weights, ready for repeated inference calls
+/// where only the inputs change between runs.
 pub struct Session<'a> {
     runner: &'a CompiledModel,
     weights: Weights,
 }
 
 impl CompiledModel {
+    /// Compile a traced [`Function`] into a PJRT executable.
     pub fn from_function(func: &Function, plugin_path: impl AsRef<Path>) -> Result<Self, Error> {
         let mut main_func = func.clone();
         main_func.name = "main".to_string();
@@ -175,6 +193,7 @@ impl CompiledModel {
         }
     }
 
+    /// Execute the model with the given inputs, copying data to/from the device.
     pub fn run(&self, inputs: Inputs) -> Result<HostTensor, Error> {
         let ordered = inputs.into_ordered()?;
 
@@ -277,6 +296,7 @@ fn make_i32_host_buffer(data: &[i32], dims: &[i64]) -> HostBuffer {
     HostBuffer::from(typed)
 }
 
+/// Run the executable and copy the first output back to host memory.
 fn execute_and_extract(
     exec: &LoadedExecutable,
     arg_buffers: Vec<Buffer>,
@@ -311,6 +331,8 @@ fn execute_and_extract(
     }
 }
 
+/// Resolve the CPU PJRT plugin path: check `PJRT_CPU_PLUGIN` env var,
+/// then fall back to platform-specific default names.
 pub fn default_cpu_plugin_path() -> PathBuf {
     if let Ok(p) = std::env::var("PJRT_CPU_PLUGIN") {
         return PathBuf::from(p);

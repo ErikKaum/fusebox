@@ -1,3 +1,5 @@
+//! Pre-built neural network layers (auto-derive their weight tracing via `#[derive(Module)]`).
+
 mod embedding;
 mod linear;
 mod rms_norm;

@@ -1,3 +1,8 @@
+//! Symbolic tensor type — the primary user-facing API for building computation graphs.
+//!
+//! All arithmetic, shape, and reduction methods on [`Tensor`] record operations
+//! into the underlying [`FuncBuilder`] graph rather than computing eagerly.
+
 use core::fmt;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,6 +43,7 @@ impl Tensor {
         self.shape.rank()
     }
 
+    /// Ensure two tensors belong to the same computation graph.
     fn check_same_graph(&self, other: &Tensor) -> Result<(), Error> {
         if !Rc::ptr_eq(&self.graph, &other.graph) {
             return Err(Error::GraphMismatch);
@@ -279,6 +285,7 @@ impl Tensor {
         Ok(Tensor::new(shape, value, &self.graph))
     }
 
+    /// Mean reduction — computed as sum / count.
     pub fn mean(&self, axes: &[i64]) -> Result<Tensor, Error> {
         let count: i64 = axes
             .iter()
@@ -300,6 +307,7 @@ impl Tensor {
 
     // ── Softmax ─────────────────────────────────────────────────────
 
+    /// Numerically stable softmax: shift by max, exponentiate, normalize.
     pub fn softmax(&self, axis: i64) -> Result<Tensor, Error> {
         let max_val = self.max(&[axis])?;
         let max_val = max_val.unsqueeze(axis)?;
@@ -312,6 +320,7 @@ impl Tensor {
 
     // ── Constants ───────────────────────────────────────────────────
 
+    /// Create a constant tensor with the same shape and dtype, filled with `value`.
     pub fn full_like(&self, value: f64) -> Tensor {
         let mut b = self.graph.borrow_mut();
         let (shape, val) = b.constant(value, &self.shape);
@@ -329,6 +338,7 @@ impl Tensor {
 
     // ── Scalar binary ops ───────────────────────────────────────────
 
+    /// Create a rank-0 scalar constant matching this tensor's dtype.
     pub(crate) fn scalar_const(&self, value: f64) -> Tensor {
         let mut b = self.graph.borrow_mut();
         let scalar_shape = Shape::new(vec![], self.shape.dtype);
@@ -379,6 +389,8 @@ impl Tensor {
         self.restore_reduced_dims(&reduced, axes)
     }
 
+    /// Re-insert size-1 dims at the reduced axes so the result is broadcastable
+    /// with the original shape.
     fn restore_reduced_dims(&self, reduced: &Tensor, axes: &[i64]) -> Result<Tensor, Error> {
         let rank = self.rank() as i64;
         let mut normalized: Vec<usize> = axes
@@ -460,6 +472,7 @@ impl Tensor {
         Ok(Tensor::new(shape, value, &self.graph))
     }
 
+    /// Slice a contiguous range along one axis (like PyTorch `narrow`).
     pub fn narrow(&self, axis: i64, start: i64, len: i64) -> Result<Tensor, Error> {
         let rank = self.rank() as i64;
         let a = if axis < 0 {
@@ -476,6 +489,7 @@ impl Tensor {
 
     // ── Comparison ops ──────────────────────────────────────────────
 
+    /// Element-wise comparison returning a Bool tensor.
     fn compare_op(&self, other: &Tensor, dir: CompareDirection) -> Result<Tensor, Error> {
         self.check_same_graph(other)?;
         let mut b = self.graph.borrow_mut();
@@ -510,6 +524,7 @@ impl Tensor {
 
     // ── Select ──────────────────────────────────────────────────────
 
+    /// Element-wise ternary: pick `on_true` or `on_false` based on a Bool predicate.
     pub fn select(pred: &Tensor, on_true: &Tensor, on_false: &Tensor) -> Result<Tensor, Error> {
         if !Rc::ptr_eq(&pred.graph, &on_true.graph) || !Rc::ptr_eq(&pred.graph, &on_false.graph) {
             return Err(Error::GraphMismatch);
@@ -529,6 +544,7 @@ impl Tensor {
 
     // ── Gather (embedding lookup) ───────────────────────────────────
 
+    /// Gather rows from a rank-2 table using integer indices (embedding lookup).
     pub fn gather(&self, indices: &Tensor) -> Result<Tensor, Error> {
         self.check_same_graph(indices)?;
         let mut b = self.graph.borrow_mut();

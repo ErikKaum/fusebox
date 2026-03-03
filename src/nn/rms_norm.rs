@@ -3,6 +3,7 @@ use fusebox_macros::Module;
 use crate::error::Error;
 use crate::tensor::Tensor;
 
+/// Root Mean Square Layer Normalization (used in LLaMA-family models).
 #[derive(Module)]
 pub struct RmsNorm {
     pub weight: Tensor,

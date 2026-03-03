@@ -1,12 +1,20 @@
+//! Intermediate representation for computation graphs.
+//!
+//! The IR mirrors StableHLO: each [`Inst`] variant maps 1:1 to a StableHLO op.
+//! A [`Function`] is a flat list of SSA statements with typed parameters and
+//! explicit return values. [`Module`] groups one or more functions for MLIR printing.
+
 use serde::{Deserialize, Serialize};
 
 use crate::{shape::Shape, value::ValueId};
 
+/// A collection of functions forming a complete MLIR module.
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
 }
 
+/// A single function in the IR: named parameters, a body of SSA statements, and return values.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
@@ -26,12 +34,14 @@ impl Function {
     }
 }
 
+/// Distinguishes runtime inputs from pre-loaded weights.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ParamKind {
     Input,
     Weight,
 }
 
+/// A named, typed function parameter (either an input or a weight).
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
@@ -40,13 +50,14 @@ pub struct Param {
     pub kind: ParamKind,
 }
 
+/// One SSA statement: produces `result` via `inst`.
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub result: ValueId,
     pub inst: Inst,
 }
 
-// ── Generalized op structs ──────────────────────────────────────────
+// ── Op payload structs ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct BinaryOp {
@@ -61,6 +72,7 @@ pub struct UnaryOp {
     pub out: Shape,
 }
 
+/// Batched matrix multiply (StableHLO `dot_general`).
 #[derive(Debug, Clone)]
 pub struct DotGeneral {
     pub lhs: ValueId,
@@ -72,13 +84,16 @@ pub struct DotGeneral {
     pub batching_dims_rhs: Vec<i64>,
 }
 
+/// Broadcasts a tensor into a larger shape along the given dimension mapping.
 #[derive(Debug, Clone)]
 pub struct BroadcastInDim {
     pub operand: ValueId,
     pub out: Shape,
+    /// Maps each source dimension to its position in the output shape.
     pub dims: Vec<i64>,
 }
 
+/// A splat constant: a single scalar value broadcast to `out` shape.
 #[derive(Debug, Clone)]
 pub struct Constant {
     pub value: f64,
@@ -169,6 +184,7 @@ pub struct IotaOp {
     pub out: Shape,
 }
 
+/// Argmax via a paired value+index reduce (StableHLO pattern).
 #[derive(Debug, Clone)]
 pub struct ReduceArgMax {
     pub operand: ValueId,
@@ -179,6 +195,7 @@ pub struct ReduceArgMax {
     pub out: Shape,
 }
 
+/// Embedding lookup / advanced indexing (StableHLO `gather`).
 #[derive(Debug, Clone)]
 pub struct GatherOp {
     pub operand: ValueId,
@@ -191,6 +208,7 @@ pub struct GatherOp {
     pub out: Shape,
 }
 
+/// Every operation the graph can contain. Each variant maps to one StableHLO op.
 #[derive(Debug, Clone)]
 pub enum Inst {
     DotGeneral(DotGeneral),

@@ -1,9 +1,15 @@
+//! Shape-only view of a safetensors file (no weight data loaded).
+//!
+//! Used during model tracing to discover weight shapes from a checkpoint header
+//! without reading the full tensor data into memory.
+
 use std::collections::HashMap;
 
 use safetensors::SafeTensors;
 
 use crate::{dtype::DType, error::Error, module_api::ShapeProvider, shape::Shape};
 
+/// Maps canonical weight names to their shapes, parsed from a safetensors header.
 #[derive(Debug, Clone)]
 pub struct SafeTensorShapes {
     map: HashMap<String, Shape>,

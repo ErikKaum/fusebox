@@ -1,3 +1,9 @@
+//! Function signature and typed input binding.
+//!
+//! [`Signature`] captures the ordered parameter list (names, shapes, kinds)
+//! extracted from a traced function. [`Inputs`] is a fill-in-the-blanks
+//! container where callers set concrete data for each parameter before execution.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,6 +15,7 @@ use crate::ir::{Function, ParamKind};
 use crate::shape::Shape;
 use crate::value::ValueId;
 
+/// Metadata for a single function parameter (name, shape, kind).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamSpec {
     pub name: String,
@@ -17,6 +24,7 @@ pub struct ParamSpec {
     pub kind: ParamKind,
 }
 
+/// The full parameter signature of a compiled function, with fast name lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
     params: Vec<ParamSpec>,
@@ -63,6 +71,7 @@ impl Signature {
     }
 }
 
+/// Concrete data for one parameter — either f32 or i32 elements.
 #[derive(Debug, Clone)]
 pub enum ParamData {
     F32(Vec<f32>),
@@ -89,6 +98,10 @@ impl ParamData {
     }
 }
 
+/// Collects concrete data for every parameter before a model run.
+///
+/// Validates dtype and element count on each `set` call. Once all slots
+/// are filled, convert to an ordered list via [`into_ordered`](Self::into_ordered).
 #[derive(Clone)]
 pub struct Inputs {
     sig: Arc<Signature>,
@@ -177,6 +190,8 @@ impl Inputs {
         Ok(())
     }
 
+    /// Consume self and return parameter data in signature order.
+    /// Errors if any parameter slot was not filled.
     pub fn into_ordered(self) -> Result<Vec<(Shape, ParamData)>, Error> {
         let sig = self.sig;
         let mut out = Vec::with_capacity(self.values.len());

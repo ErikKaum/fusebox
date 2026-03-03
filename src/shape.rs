@@ -1,11 +1,12 @@
-// defines Shape { dims: Vec<i64>, dtype: DType } plus small helpers (rank, pretty-print, equality)
-
 use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::dtype::DType;
 
+/// Tensor shape: dimension sizes + element type.
+///
+/// Uses `i64` dims to match MLIR's 64-bit dimension representation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Shape {
     /// Dimension sizes. Empty = rank-0 tensor.

@@ -1,9 +1,15 @@
+//! Safetensors checkpoint loader.
+//!
+//! A [`Checkpoint`] holds the raw bytes of a `.safetensors` file in memory
+//! and lazily parses shapes and weight data on demand.
+
 use std::{fs, path::Path, sync::Arc};
 
 use crate::{
     error::Error, safetensor_shapes::SafeTensorShapes, signature::Signature, weights::Weights,
 };
 
+/// An in-memory safetensors checkpoint.
 #[derive(Clone)]
 pub struct Checkpoint {
     bytes: Arc<Vec<u8>>,
@@ -32,6 +38,7 @@ impl Checkpoint {
         &self.bytes
     }
 
+    /// Extract weight data matching the given signature (converting bf16/f16 to f32).
     pub fn load_weights(&self, sig: &Signature) -> Result<Weights, Error> {
         Weights::from_safetensors_bytes(self.bytes(), sig)
     }

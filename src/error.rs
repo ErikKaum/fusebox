@@ -2,6 +2,7 @@ use core::fmt;
 
 use crate::{dtype::DType, shape::Shape};
 
+/// Unified error type covering tracing, compilation, and runtime failures.
 #[derive(Debug, Clone)]
 pub enum Error {
     RankMismatch {
@@ -74,6 +75,7 @@ impl Error {
         }
     }
 
+    /// Wrap this error with a hierarchical scope name for better diagnostics.
     pub fn with_scope(self, scope: impl Into<String>) -> Self {
         let scope = scope.into();
         if scope.is_empty() {

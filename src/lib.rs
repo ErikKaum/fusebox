@@ -1,3 +1,14 @@
+//! **Fusebox** — trace-based tensor compiler for Rust.
+//!
+//! Build a computation graph by calling operations on symbolic [`tensor::Tensor`]s,
+//! lower the graph to StableHLO MLIR, and execute it through a PJRT backend
+//! (CPU, GPU, TPU, etc.).
+//!
+//! The typical workflow is:
+//! 1. **Trace** a model using [`trace::TraceCx`] (or [`Device::compile`]).
+//! 2. **Compile** the resulting IR to a PJRT executable.
+//! 3. **Run** the executable with concrete weight and input data.
+
 extern crate self as fusebox;
 
 pub mod builder;
@@ -19,6 +30,7 @@ pub mod trace_fn;
 pub mod value;
 pub mod weights;
 
+/// Common imports for working with fusebox.
 pub mod prelude {
     pub use crate::checkpoint::Checkpoint;
     pub use crate::device::Device;

@@ -1,3 +1,8 @@
+//! Weight loading from safetensors files.
+//!
+//! Handles bf16/f16 → f32 conversion so the rest of the runtime only needs
+//! to deal with f32 host buffers.
+
 use std::collections::HashMap;
 
 use safetensors::{Dtype as SdType, SafeTensors};
@@ -6,6 +11,7 @@ use crate::error::Error;
 use crate::ir::ParamKind;
 use crate::signature::{Inputs, Signature};
 
+/// Pre-loaded weight data (all converted to f32), keyed by parameter name.
 #[derive(Debug, Clone)]
 pub struct Weights {
     data: HashMap<String, Vec<f32>>,
@@ -18,6 +24,7 @@ impl Weights {
         Self::from_safetensors_inner(&st, sig)
     }
 
+    /// Bind all loaded weights into an [`Inputs`] container.
     pub fn apply_ref(&self, bindings: &mut Inputs) -> Result<(), Error> {
         for (name, data) in &self.data {
             bindings.set(name, data.clone())?;
@@ -125,6 +132,7 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, Error> {
     Ok(out)
 }
 
+/// IEEE 754 half-precision → single-precision conversion (no dependency on `half` crate).
 fn f16_to_f32(h: u16) -> f32 {
     let sign = (h >> 15) as u32;
     let exp = ((h >> 10) & 0x1F) as u32;

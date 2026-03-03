@@ -1,3 +1,8 @@
+//! MLIR text emitter — converts the fusebox IR into StableHLO MLIR text.
+//!
+//! The output is valid MLIR that can be fed directly to a PJRT compiler or
+//! printed for debugging (set `FUSEBOX_DUMP_MLIR=1`).
+
 use core::fmt::Write;
 
 use crate::dtype::DType;
@@ -5,6 +10,7 @@ use crate::ir::{Function, Inst, Module, ReduceKind};
 use crate::shape::Shape;
 use crate::value::ValueId;
 
+/// Emit a complete MLIR module wrapping all functions.
 pub fn print_module(module: &Module) -> String {
     let mut out = String::new();
     writeln!(&mut out, "module {{").unwrap();
@@ -15,6 +21,7 @@ pub fn print_module(module: &Module) -> String {
     out
 }
 
+/// Emit a single `func.func` with its signature, body, and return statement.
 pub fn print_function(func: &Function) -> String {
     let mut out = String::new();
 
@@ -462,6 +469,7 @@ fn join_i64(xs: &[i64]) -> String {
         .join(", ")
 }
 
+/// Look up the output shape of a value — either a parameter or an instruction result.
 fn value_type(func: &Function, id: ValueId) -> Option<&Shape> {
     for p in &func.params {
         if p.value == id {
@@ -476,6 +484,7 @@ fn value_type(func: &Function, id: ValueId) -> Option<&Shape> {
     None
 }
 
+/// Extract the output shape from any instruction variant.
 fn inst_out_shape(inst: &Inst) -> &Shape {
     match inst {
         Inst::DotGeneral(op) => &op.out,

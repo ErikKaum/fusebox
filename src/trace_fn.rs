@@ -3,6 +3,8 @@ use crate::ir::Function;
 use crate::tensor::Tensor;
 use crate::trace::TraceCx;
 
+/// Convenience wrapper: create a [`TraceCx`], run the closure, set the return
+/// value, and extract the finished [`Function`] — all in one call.
 pub fn trace_function<F>(name: &str, build: F) -> Result<Function, Error>
 where
     F: FnOnce(&mut TraceCx) -> Result<Tensor, Error>,

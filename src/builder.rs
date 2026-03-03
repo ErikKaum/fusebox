@@ -1,3 +1,9 @@
+//! Graph-building backend: translates high-level tensor ops into IR statements.
+//!
+//! [`FuncBuilder`] is the mutable state behind a tracing session. Every tensor
+//! operation (add, matmul, reshape, ...) calls into the builder which emits the
+//! corresponding [`Inst`] and returns a fresh [`ValueId`].
+
 use crate::dtype::DType;
 use crate::error::Error;
 use crate::ir::{
@@ -8,6 +14,10 @@ use crate::ir::{
 use crate::shape::Shape;
 use crate::value::ValueId;
 
+/// Accumulates IR statements while a computation graph is being traced.
+///
+/// Shared (via `Rc<RefCell<…>>`) between the [`TraceCx`](crate::trace::TraceCx)
+/// and every [`Tensor`](crate::tensor::Tensor) created during the trace.
 pub struct FuncBuilder {
     func: Function,
     next_id: u32,
@@ -43,6 +53,7 @@ impl FuncBuilder {
         &self.func
     }
 
+    /// Allocate the next SSA value id.
     pub fn fresh(&mut self) -> ValueId {
         let id = self.next_id;
         self.next_id += 1;
@@ -80,6 +91,8 @@ impl FuncBuilder {
 
     // ── Broadcasting ────────────────────────────────────────────────
 
+    /// Broadcast two operands to a common shape, inserting `BroadcastInDim`
+    /// ops only for the sides that actually need it.
     fn broadcast_pair(
         &mut self,
         a_shape: &Shape,
@@ -128,6 +141,7 @@ impl FuncBuilder {
 
     // ── Binary ops (with auto-broadcast) ────────────────────────────
 
+    /// Emit a binary op, auto-broadcasting operands to a common shape first.
     fn binary_op(
         &mut self,
         a_shape: &Shape,
@@ -277,8 +291,9 @@ impl FuncBuilder {
         (out, result)
     }
 
-    // ── Composite activations ───────────────────────────────────────
+    // ── Composite activations (decomposed into primitive ops) ──────
 
+    /// SiLU: x * sigmoid(x)
     pub fn silu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
         let (sig_shape, sig_val) = self.logistic(shape, val);
         let result = self.fresh();
@@ -293,6 +308,7 @@ impl FuncBuilder {
         (sig_shape, result)
     }
 
+    /// ReLU: max(x, 0)
     pub fn relu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
         let zero_val = self.emit_constant(0.0, shape);
         let result = self.fresh();
@@ -413,6 +429,7 @@ impl FuncBuilder {
         (shape.clone(), val)
     }
 
+    /// Emit a constant op and return only the ValueId (no shape wrapper).
     fn emit_constant(&mut self, value: f64, shape: &Shape) -> ValueId {
         let result = self.fresh();
         self.func.insts.push(Stmt {
@@ -486,6 +503,7 @@ impl FuncBuilder {
 
     // ── Expand (broadcast size-1 dims) ────────────────────────────
 
+    /// Explicitly broadcast size-1 dimensions to `target_dims`.
     pub fn expand(
         &mut self,
         shape: &Shape,
@@ -530,6 +548,8 @@ impl FuncBuilder {
 
     // ── Reductions ──────────────────────────────────────────────────
 
+    /// Core reduce: drops the reduced axes from the shape and emits a
+    /// `Reduce` instruction with the appropriate identity init value.
     fn reduce(
         &mut self,
         shape: &Shape,
@@ -602,6 +622,8 @@ impl FuncBuilder {
         self.reduce(shape, val, axes, ReduceKind::Min)
     }
 
+    /// Argmax: uses a paired value+index reduce pattern to find the index
+    /// of the maximum value along `axis`.
     pub fn argmax(
         &mut self,
         shape: &Shape,
@@ -660,6 +682,8 @@ impl FuncBuilder {
 
     // ── Matmul (N-dimensional) ──────────────────────────────────────
 
+    /// N-dimensional matmul via `dot_general`. Handles batch broadcasting
+    /// when one operand has no batch dims.
     pub fn matmul(
         &mut self,
         x_shape: &Shape,
@@ -964,6 +988,7 @@ impl FuncBuilder {
 
     // ── Gather (embedding lookup) ───────────────────────────────────
 
+    /// Embedding lookup: gathers rows from a [vocab, dim] table using integer indices.
     pub fn embedding_lookup(
         &mut self,
         table_shape: &Shape,
@@ -1016,6 +1041,8 @@ impl FuncBuilder {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/// Numpy-style broadcast: right-aligns dimensions, expands size-1 dims.
+/// Returns the output shape and the dimension-mapping for each operand.
 fn compute_broadcast(a: &Shape, b: &Shape) -> Result<(Shape, Vec<i64>, Vec<i64>), Error> {
     let a_dims = &a.dims;
     let b_dims = &b.dims;
@@ -1052,6 +1079,7 @@ fn compute_broadcast(a: &Shape, b: &Shape) -> Result<(Shape, Vec<i64>, Vec<i64>)
     Ok((Shape::new(out_dims, a.dtype), a_map, b_map))
 }
 
+/// Convert a possibly-negative axis index to a positive one, bounds-checked.
 fn normalize_axis(axis: i64, rank: usize) -> Result<usize, Error> {
     let rank_i = rank as i64;
     let normalized = if axis < 0 { axis + rank_i } else { axis };
