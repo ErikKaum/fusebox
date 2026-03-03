@@ -5,6 +5,7 @@
 # ]
 # ///
 
+from pathlib import Path
 import numpy as np
 from safetensors.numpy import save_file
 
@@ -16,7 +17,11 @@ tensors = {
     "proj/down/weight":      rng.standard_normal((8, 4)).astype(np.float32) * 0.1,
 }
 
-save_file(tensors, "model.safetensors")
-print("saved model.safetensors with shapes:")
+out = Path("examples/linear/artifacts")
+out.mkdir(parents=True, exist_ok=True)
+
+path = out / "model.safetensors"
+save_file(tensors, str(path))
+print(f"saved {path} with shapes:")
 for k, v in tensors.items():
     print(f"  {k}: {v.shape}")

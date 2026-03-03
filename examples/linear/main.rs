@@ -19,11 +19,11 @@ impl Mlp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ckpt = Checkpoint::from_file("model.safetensors")?;
+    let ckpt = Checkpoint::from_file("examples/linear/artifacts/model.safetensors")?;
     let device = Device::cpu();
 
     let runner = device.compile("main", |cx| {
-        let x = cx.input("x", Shape::new(vec![2, 4], DType::F32));
+        let x = cx.input("x", Shape::new(vec![1, 8], DType::F32));
         let mlp = Mlp::trace(cx, "proj", ckpt.shapes())?;
         mlp.forward(&x)
     })?;

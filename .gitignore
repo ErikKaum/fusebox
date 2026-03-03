@@ -13,3 +13,4 @@ runner/stablehlo-runner
 .DS_Store
 
 examples/smollm2/artifacts
+examples/linear/artifacts
