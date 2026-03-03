@@ -106,27 +106,28 @@ FUSEBOX_DUMP_MLIR=1 cargo run --example linear
 
 ```
 src/
-├── lib.rs              # Crate root and prelude
-├── tensor.rs           # Symbolic Tensor API (user-facing)
-├── trace.rs            # TraceCx — graph tracing entry point
-├── builder.rs          # FuncBuilder — emits IR from tensor ops
-├── ir.rs               # IR data structures (mirrors StableHLO)
-├── print_mlir.rs       # MLIR text emitter
-├── pjrt_runtime.rs     # CompiledModel, Session, execution via PJRT
-├── signature.rs        # Parameter signatures and input binding
-├── device.rs           # Device abstraction over PJRT plugins
-├── checkpoint.rs       # Safetensors checkpoint loader
-├── weights.rs          # Weight extraction with bf16/f16→f32 conversion
-├── safetensor_shapes.rs# Header-only shape parsing from safetensors
-├── shape.rs            # Shape (dims + dtype)
-├── dtype.rs            # Supported element types
-├── value.rs            # SSA value ids
-├── error.rs            # Unified error type
-├── module_api.rs       # Module and ShapeProvider traits
-└── nn/                 # Built-in layers (Linear, Embedding, RmsNorm)
+├── lib.rs                  # Crate root and prelude
+├── tensor.rs               # Symbolic Tensor API (user-facing)
+├── trace.rs                # TraceCx — graph tracing entry point
+├── builder.rs              # FuncBuilder — emits IR from tensor ops
+├── ir.rs                   # IR data structures (mirrors StableHLO)
+├── print_mlir.rs           # MLIR text emitter
+├── pjrt_runtime.rs         # CompiledModel, Session, execution via PJRT
+├── signature.rs            # Parameter signatures and input binding
+├── device.rs               # Device abstraction over PJRT plugins
+├── checkpoint.rs           # Safetensors checkpoint loader
+├── weights.rs              # Weight extraction with bf16/f16→f32 conversion
+├── safetensor_shapes.rs    # Header-only shape parsing from safetensors
+├── shape.rs                # Shape (dims + dtype)
+├── dtype.rs                # Supported element types
+├── value.rs                # SSA value ids
+├── error.rs                # Unified error type
+├── module_api.rs           # Module and ShapeProvider traits
+└── nn/                     # Built-in layers (Linear, Embedding, RmsNorm)
 
 fusebox_macros/         # Proc macro crate (#[derive(Module)])
+
 examples/
 ├── linear/             # Minimal MLP example
-└── smollm2/            # Full SmolLM2-135M transformer with chat CLI
+└── smollm2/            # SmolLM2-135M-Instruct transformer with chat CLI
 ```

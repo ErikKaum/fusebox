@@ -13,7 +13,7 @@ use model::trace_smollm2;
 // ── CLI ─────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "smollm2", about = "SmolLM2-135M: compile and chat")]
+#[command(name = "smollm2", about = "SmolLM2-135M-Instruct: compile and chat")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -24,7 +24,7 @@ enum Command {
     /// Compile the model graph and save the artifact to disk.
     Compile {
         /// Path to the safetensors checkpoint (needed for weight shapes).
-        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m.safetensors")]
+        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors")]
         checkpoint: PathBuf,
 
         /// Where to write the compiled artifact.
@@ -38,7 +38,7 @@ enum Command {
     /// Interactive chat using the model.
     Chat {
         /// Path to the safetensors checkpoint (weights).
-        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m.safetensors")]
+        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors")]
         checkpoint: PathBuf,
 
         /// Path to a HuggingFace tokenizer.json file.
@@ -46,8 +46,12 @@ enum Command {
         tokenizer: PathBuf,
 
         /// Path to a pre-compiled artifact. If omitted, compiles from scratch.
-        #[arg(long)] 
+        #[arg(long)]
         compiled: Option<PathBuf>,
+
+        /// System prompt for the chat.
+        #[arg(long, default_value = "You are a helpful assistant.")]
+        system: String,
 
         /// Sequence length (must match the compiled artifact if one is provided).
         #[arg(long, default_value_t = 256)]
@@ -57,6 +61,43 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         max_tokens: usize,
     },
+}
+
+// ── Chat template (ChatML) ──────────────────────────────────────────
+
+struct ChatHistory {
+    system: String,
+    turns: Vec<(String, String)>,
+}
+
+impl ChatHistory {
+    fn new(system: String) -> Self {
+        Self {
+            system,
+            turns: Vec::new(),
+        }
+    }
+
+    fn push_turn(&mut self, user: String, assistant: String) {
+        self.turns.push((user, assistant));
+    }
+
+    /// Format the full prompt for the next assistant turn, including all
+    /// prior conversation and a new user message.
+    fn format_prompt(&self, user_msg: &str) -> String {
+        let mut prompt = format!("<|im_start|>system\n{}<|im_end|>\n", self.system);
+
+        for (u, a) in &self.turns {
+            prompt.push_str(&format!(
+                "<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n{a}<|im_end|>\n"
+            ));
+        }
+
+        prompt.push_str(&format!(
+            "<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
+        ));
+        prompt
+    }
 }
 
 // ── Compile ─────────────────────────────────────────────────────────
@@ -88,6 +129,7 @@ fn chat(
     checkpoint: &PathBuf,
     tokenizer_path: &PathBuf,
     compiled: Option<&PathBuf>,
+    system: &str,
     seq: i64,
     max_tokens: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -121,37 +163,47 @@ fn chat(
         Tokenizer::from_file(tokenizer_path).map_err(|e| format!("load tokenizer: {e}"))?;
 
     let eos_id = tokenizer
-        .token_to_id("<|endoftext|>")
-        .or_else(|| tokenizer.token_to_id("</s>"))
-        .unwrap_or(2) as i32;
+        .token_to_id("<|im_end|>")
+        .unwrap_or_else(|| {
+            tokenizer
+                .token_to_id("<|endoftext|>")
+                .unwrap_or(2)
+        }) as i32;
 
-    println!("\nReady! Type a prompt and press Enter. Type \"exit\" to quit.\n");
+    let mut history = ChatHistory::new(system.to_string());
+
+    println!("\nSmolLM2-135M-Instruct ready. Type a message and press Enter. Type \"exit\" to quit.\n");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     loop {
-        print!("> ");
+        print!("You> ");
         stdout.flush()?;
 
-        let mut prompt = String::new();
-        if stdin.lock().read_line(&mut prompt)? == 0 {
-            break; // EOF
+        let mut user_input = String::new();
+        if stdin.lock().read_line(&mut user_input)? == 0 {
+            break;
         }
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
+        let user_input = user_input.trim();
+        if user_input.is_empty() {
             continue;
         }
-        if prompt == "exit" || prompt == "quit" {
+        if user_input == "exit" || user_input == "quit" {
             break;
         }
 
+        let prompt = history.format_prompt(user_input);
         let encoding = tokenizer
-            .encode(prompt, false)
+            .encode(prompt.as_str(), false)
             .map_err(|e| format!("tokenize: {e}"))?;
         let prompt_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
 
         let mut context = prompt_ids;
+        let mut generated = String::new();
+
+        print!("Assistant> ");
+        stdout.flush()?;
 
         for _ in 0..max_tokens {
             let input = prepare_input(&context, seq as usize);
@@ -168,11 +220,14 @@ fn chat(
             let piece = tokenizer
                 .decode(&[next_token as u32], true)
                 .unwrap_or_default();
+            generated.push_str(&piece);
             print!("{piece}");
             stdout.flush()?;
         }
 
         println!();
+
+        history.push_turn(user_input.to_string(), generated);
     }
 
     Ok(())
@@ -206,8 +261,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint,
             tokenizer,
             compiled,
+            system,
             seq,
             max_tokens,
-        } => chat(checkpoint, tokenizer, compiled.as_ref(), *seq, *max_tokens),
+        } => chat(checkpoint, tokenizer, compiled.as_ref(), system, *seq, *max_tokens),
     }
 }

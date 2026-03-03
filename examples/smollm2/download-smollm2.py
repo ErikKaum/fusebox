@@ -4,7 +4,7 @@
 # ]
 # ///
 
-"""Download SmolLM2-135M weights and tokenizer for fusebox.
+"""Download SmolLM2-135M-Instruct weights and tokenizer for fusebox.
 
 No preprocessing needed -- fusebox handles:
   - Key name normalization (dots → slashes)
@@ -17,9 +17,9 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 import shutil
 
-MODEL_ID = "HuggingFaceTB/SmolLM2-135M"
+MODEL_ID = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
-WEIGHTS_OUT = Path("examples/smollm2/artifacts/smollm2-135m.safetensors")
+WEIGHTS_OUT = Path("examples/smollm2/artifacts/smollm2-135m-instruct.safetensors")
 TOKENIZER_OUT = Path("examples/smollm2/artifacts/tokenizer.json")
 
 WEIGHTS_OUT.parent.mkdir(parents=True, exist_ok=True)
