@@ -10,3 +10,7 @@ edition = "2024"
 fusebox_macros = { path = "fusebox_macros" }
 pjrt = "0.2.0"
 safetensors = "0.7.0"
+
+[[bin]]
+name = "generate-fixtures"
+path = "src/bin/generate_fixtures.rs"

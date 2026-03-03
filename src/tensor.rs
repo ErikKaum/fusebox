@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::builder::FuncBuilder;
 use crate::dtype::DType;
 use crate::error::Error;
+use crate::ir::CompareDirection;
 use crate::shape::Shape;
 use crate::value::ValueId;
 
@@ -154,6 +155,30 @@ impl Tensor {
         Tensor::new(shape, value, &self.graph)
     }
 
+    pub fn cos(&self) -> Tensor {
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.cosine(&self.shape, self.value);
+        drop(b);
+        Tensor::new(shape, value, &self.graph)
+    }
+
+    pub fn sin(&self) -> Tensor {
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.sine(&self.shape, self.value);
+        drop(b);
+        Tensor::new(shape, value, &self.graph)
+    }
+
+    pub fn to_dtype(&self, dtype: DType) -> Tensor {
+        if self.shape.dtype == dtype {
+            return self.clone();
+        }
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.convert(&self.shape, self.value, dtype);
+        drop(b);
+        Tensor::new(shape, value, &self.graph)
+    }
+
     // ── Activations ─────────────────────────────────────────────────
 
     pub fn relu(&self) -> Tensor {
@@ -217,6 +242,13 @@ impl Tensor {
         self.reshape(&new_dims)
     }
 
+    pub fn expand(&self, target_dims: &[i64]) -> Result<Tensor, Error> {
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.expand(&self.shape, self.value, target_dims)?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
+    }
+
     // ── Reductions ──────────────────────────────────────────────────
 
     pub fn sum(&self, axes: &[i64]) -> Result<Tensor, Error> {
@@ -236,6 +268,13 @@ impl Tensor {
     pub fn min(&self, axes: &[i64]) -> Result<Tensor, Error> {
         let mut b = self.graph.borrow_mut();
         let (shape, value) = b.reduce_min(&self.shape, self.value, axes)?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
+    }
+
+    pub fn argmax(&self, axis: i64) -> Result<Tensor, Error> {
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.argmax(&self.shape, self.value, axis)?;
         drop(b);
         Ok(Tensor::new(shape, value, &self.graph))
     }
@@ -286,6 +325,217 @@ impl Tensor {
 
     pub fn ones_like(&self) -> Tensor {
         self.full_like(1.0)
+    }
+
+    // ── Scalar binary ops ───────────────────────────────────────────
+
+    pub(crate) fn scalar_const(&self, value: f64) -> Tensor {
+        let mut b = self.graph.borrow_mut();
+        let scalar_shape = Shape::new(vec![], self.shape.dtype);
+        let (shape, val) = b.constant(value, &scalar_shape);
+        drop(b);
+        Tensor::new(shape, val, &self.graph)
+    }
+
+    pub fn add_scalar(&self, value: f64) -> Result<Tensor, Error> {
+        let s = self.scalar_const(value);
+        self.add(&s)
+    }
+
+    pub fn sub_scalar(&self, value: f64) -> Result<Tensor, Error> {
+        let s = self.scalar_const(value);
+        self.sub(&s)
+    }
+
+    pub fn mul_scalar(&self, value: f64) -> Result<Tensor, Error> {
+        let s = self.scalar_const(value);
+        self.mul(&s)
+    }
+
+    pub fn div_scalar(&self, value: f64) -> Result<Tensor, Error> {
+        let s = self.scalar_const(value);
+        self.div(&s)
+    }
+
+    // ── Keepdim reductions ──────────────────────────────────────────
+
+    pub fn sum_keepdim(&self, axes: &[i64]) -> Result<Tensor, Error> {
+        let reduced = self.sum(axes)?;
+        self.restore_reduced_dims(&reduced, axes)
+    }
+
+    pub fn max_keepdim(&self, axes: &[i64]) -> Result<Tensor, Error> {
+        let reduced = self.max(axes)?;
+        self.restore_reduced_dims(&reduced, axes)
+    }
+
+    pub fn min_keepdim(&self, axes: &[i64]) -> Result<Tensor, Error> {
+        let reduced = self.min(axes)?;
+        self.restore_reduced_dims(&reduced, axes)
+    }
+
+    pub fn mean_keepdim(&self, axes: &[i64]) -> Result<Tensor, Error> {
+        let reduced = self.mean(axes)?;
+        self.restore_reduced_dims(&reduced, axes)
+    }
+
+    fn restore_reduced_dims(&self, reduced: &Tensor, axes: &[i64]) -> Result<Tensor, Error> {
+        let rank = self.rank() as i64;
+        let mut normalized: Vec<usize> = axes
+            .iter()
+            .map(|&a| {
+                if a < 0 {
+                    (a + rank) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect();
+        normalized.sort();
+
+        let mut new_dims = reduced.shape.dims.clone();
+        for &a in &normalized {
+            new_dims.insert(a, 1);
+        }
+        reduced.reshape(&new_dims)
+    }
+
+    // ── Concatenate ─────────────────────────────────────────────────
+
+    pub fn cat(tensors: &[&Tensor], axis: i64) -> Result<Tensor, Error> {
+        if tensors.is_empty() {
+            return Err(Error::InvalidParam {
+                msg: "cat: need at least one tensor".into(),
+            });
+        }
+        let graph = &tensors[0].graph;
+        for t in tensors.iter().skip(1) {
+            if !Rc::ptr_eq(graph, &t.graph) {
+                return Err(Error::GraphMismatch);
+            }
+        }
+        let shapes: Vec<&Shape> = tensors.iter().map(|t| &t.shape).collect();
+        let vals: Vec<ValueId> = tensors.iter().map(|t| t.value).collect();
+        let mut b = graph.borrow_mut();
+        let (shape, value) = b.concatenate(&shapes, &vals, axis)?;
+        drop(b);
+        Ok(Tensor::new(shape, value, graph))
+    }
+
+    // ── Slice ───────────────────────────────────────────────────────
+
+    pub fn slice_range(
+        &self,
+        start_indices: &[i64],
+        limit_indices: &[i64],
+    ) -> Result<Tensor, Error> {
+        let strides = vec![1i64; self.rank()];
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.slice(
+            &self.shape,
+            self.value,
+            start_indices,
+            limit_indices,
+            &strides,
+        )?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
+    }
+
+    pub fn slice_with_strides(
+        &self,
+        start_indices: &[i64],
+        limit_indices: &[i64],
+        strides: &[i64],
+    ) -> Result<Tensor, Error> {
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.slice(
+            &self.shape,
+            self.value,
+            start_indices,
+            limit_indices,
+            strides,
+        )?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
+    }
+
+    pub fn narrow(&self, axis: i64, start: i64, len: i64) -> Result<Tensor, Error> {
+        let rank = self.rank() as i64;
+        let a = if axis < 0 {
+            (axis + rank) as usize
+        } else {
+            axis as usize
+        };
+        let mut starts = vec![0i64; self.rank()];
+        let mut limits: Vec<i64> = self.shape.dims.clone();
+        starts[a] = start;
+        limits[a] = start + len;
+        self.slice_range(&starts, &limits)
+    }
+
+    // ── Comparison ops ──────────────────────────────────────────────
+
+    fn compare_op(&self, other: &Tensor, dir: CompareDirection) -> Result<Tensor, Error> {
+        self.check_same_graph(other)?;
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) = b.compare(&self.shape, self.value, &other.shape, other.value, dir)?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
+    }
+
+    pub fn eq(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::EQ)
+    }
+
+    pub fn ne(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::NE)
+    }
+
+    pub fn lt(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::LT)
+    }
+
+    pub fn le(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::LE)
+    }
+
+    pub fn gt(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::GT)
+    }
+
+    pub fn ge(&self, other: &Tensor) -> Result<Tensor, Error> {
+        self.compare_op(other, CompareDirection::GE)
+    }
+
+    // ── Select ──────────────────────────────────────────────────────
+
+    pub fn select(pred: &Tensor, on_true: &Tensor, on_false: &Tensor) -> Result<Tensor, Error> {
+        if !Rc::ptr_eq(&pred.graph, &on_true.graph) || !Rc::ptr_eq(&pred.graph, &on_false.graph) {
+            return Err(Error::GraphMismatch);
+        }
+        let mut b = pred.graph.borrow_mut();
+        let (shape, value) = b.select(
+            &pred.shape,
+            pred.value,
+            &on_true.shape,
+            on_true.value,
+            &on_false.shape,
+            on_false.value,
+        )?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &pred.graph))
+    }
+
+    // ── Gather (embedding lookup) ───────────────────────────────────
+
+    pub fn gather(&self, indices: &Tensor) -> Result<Tensor, Error> {
+        self.check_same_graph(indices)?;
+        let mut b = self.graph.borrow_mut();
+        let (shape, value) =
+            b.embedding_lookup(&self.shape, self.value, &indices.shape, indices.value)?;
+        drop(b);
+        Ok(Tensor::new(shape, value, &self.graph))
     }
 }
 
@@ -374,5 +624,84 @@ impl std::ops::Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Tensor {
         Tensor::neg(&self)
+    }
+}
+
+// ── Scalar operator overloads ───────────────────────────────────────
+//
+// Enable `tensor * 2.0`, `2.0 * tensor`, etc.
+
+macro_rules! impl_scalar_op {
+    ($trait:ident, $trait_method:ident, $tensor_method:ident) => {
+        impl std::ops::$trait<f64> for &Tensor {
+            type Output = Result<Tensor, Error>;
+            fn $trait_method(self, rhs: f64) -> Result<Tensor, Error> {
+                Tensor::$tensor_method(self, rhs)
+            }
+        }
+        impl std::ops::$trait<f64> for Tensor {
+            type Output = Result<Tensor, Error>;
+            fn $trait_method(self, rhs: f64) -> Result<Tensor, Error> {
+                Tensor::$tensor_method(&self, rhs)
+            }
+        }
+    };
+}
+
+impl_scalar_op!(Add, add, add_scalar);
+impl_scalar_op!(Sub, sub, sub_scalar);
+impl_scalar_op!(Mul, mul, mul_scalar);
+impl_scalar_op!(Div, div, div_scalar);
+
+macro_rules! impl_scalar_op_reverse {
+    ($trait:ident, $trait_method:ident, $tensor_method:ident) => {
+        impl std::ops::$trait<&Tensor> for f64 {
+            type Output = Result<Tensor, Error>;
+            fn $trait_method(self, rhs: &Tensor) -> Result<Tensor, Error> {
+                rhs.$tensor_method(self)
+            }
+        }
+        impl std::ops::$trait<Tensor> for f64 {
+            type Output = Result<Tensor, Error>;
+            fn $trait_method(self, rhs: Tensor) -> Result<Tensor, Error> {
+                rhs.$tensor_method(self)
+            }
+        }
+    };
+}
+
+impl_scalar_op_reverse!(Mul, mul, mul_scalar);
+impl_scalar_op_reverse!(Add, add, add_scalar);
+
+// f64 - tensor = -(tensor - f64) ... but simpler: create scalar and subtract
+impl std::ops::Sub<&Tensor> for f64 {
+    type Output = Result<Tensor, Error>;
+    fn sub(self, rhs: &Tensor) -> Result<Tensor, Error> {
+        let s = rhs.scalar_const(self);
+        s.sub(rhs)
+    }
+}
+
+impl std::ops::Sub<Tensor> for f64 {
+    type Output = Result<Tensor, Error>;
+    fn sub(self, rhs: Tensor) -> Result<Tensor, Error> {
+        let s = rhs.scalar_const(self);
+        s.sub(&rhs)
+    }
+}
+
+impl std::ops::Div<&Tensor> for f64 {
+    type Output = Result<Tensor, Error>;
+    fn div(self, rhs: &Tensor) -> Result<Tensor, Error> {
+        let s = rhs.scalar_const(self);
+        s.div(rhs)
+    }
+}
+
+impl std::ops::Div<Tensor> for f64 {
+    type Output = Result<Tensor, Error>;
+    fn div(self, rhs: Tensor) -> Result<Tensor, Error> {
+        let s = rhs.scalar_const(self);
+        s.div(&rhs)
     }
 }

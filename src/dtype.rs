@@ -1,5 +1,3 @@
-// defines the minimal set of dtypes we support (start with F32 only, but leave the enum open).
-
 use core::fmt;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -7,6 +5,8 @@ pub enum DType {
     F16,
     BF16,
     F32,
+    I32,
+    Bool,
 }
 
 impl DType {
@@ -15,6 +15,24 @@ impl DType {
             DType::F16 => "f16",
             DType::BF16 => "bf16",
             DType::F32 => "f32",
+            DType::I32 => "i32",
+            DType::Bool => "i1",
+        }
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, DType::F16 | DType::BF16 | DType::F32)
+    }
+
+    pub fn is_integer(self) -> bool {
+        matches!(self, DType::I32)
+    }
+
+    pub fn byte_size(self) -> usize {
+        match self {
+            DType::F16 | DType::BF16 => 2,
+            DType::F32 | DType::I32 => 4,
+            DType::Bool => 1,
         }
     }
 }

@@ -1,22 +1,6 @@
 use fusebox::prelude::*;
 
 #[derive(Module)]
-pub struct Linear {
-    pub w: Tensor,
-    pub b: Option<Tensor>,
-}
-
-impl Linear {
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor, Error> {
-        let y = x.matmul(&self.w)?;
-        match &self.b {
-            Some(b) => &y + b,
-            None => Ok(y),
-        }
-    }
-}
-
-#[derive(Module)]
 pub struct Mlp {
     pub up: Linear,
     #[module(name = "gate_proj")]
@@ -49,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let y = sess.run(|inputs| inputs.set_input("x", vec![1., 2., 3., 4., 5., 6., 7., 8.]))?;
 
-    println!("{:?}", y.dims);
-    println!("{:?}", y.data);
+    println!("shape: {:?}", y.shape());
+    println!("data: {:?}", y.to_f32().unwrap());
     Ok(())
 }

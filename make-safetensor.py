@@ -11,9 +11,9 @@ from safetensors.numpy import save_file
 rng = np.random.default_rng(42)
 
 tensors = {
-    "proj/gate_proj/w": rng.standard_normal((4, 8)).astype(np.float32) * 0.1,
-    "proj/up/w":        rng.standard_normal((4, 8)).astype(np.float32) * 0.1,
-    "proj/down/w":      rng.standard_normal((8, 4)).astype(np.float32) * 0.1,
+    "proj/gate_proj/weight": rng.standard_normal((4, 8)).astype(np.float32) * 0.1,
+    "proj/up/weight":        rng.standard_normal((4, 8)).astype(np.float32) * 0.1,
+    "proj/down/weight":      rng.standard_normal((8, 4)).astype(np.float32) * 0.1,
 }
 
 save_file(tensors, "model.safetensors")

@@ -21,10 +21,13 @@ impl SafeTensorShapes {
                 .map_err(|e| Error::RuntimeError(format!("tensor {}: {}", name, e)))?;
             let dims: Vec<i64> = tv.shape().iter().map(|&d| d as i64).collect();
 
+            // BF16/F16 weights are promoted to F32 at load time because the
+            // upstream `pjrt` crate lacks bf16/f16 host-buffer support.
+            // When that's fixed, this can preserve the original dtype.
             let dtype = match tv.dtype() {
-                safetensors::Dtype::F32 => DType::F32,
-                safetensors::Dtype::F16 => DType::F16,
-                safetensors::Dtype::BF16 => DType::BF16,
+                safetensors::Dtype::F32
+                | safetensors::Dtype::F16
+                | safetensors::Dtype::BF16 => DType::F32,
                 other => {
                     return Err(Error::UnsupportedDType {
                         key: name.to_string(),
@@ -33,7 +36,9 @@ impl SafeTensorShapes {
                 }
             };
 
-            map.insert(name.to_string(), Shape::new(dims, dtype));
+            // Normalize separators: HuggingFace uses dots, fusebox uses slashes.
+            let canonical = name.replace('.', "/");
+            map.insert(canonical, Shape::new(dims, dtype));
         }
 
         Ok(Self { map })
@@ -43,5 +48,14 @@ impl SafeTensorShapes {
 impl ShapeProvider for SafeTensorShapes {
     fn shape_of(&self, full_name: &str) -> Result<Option<Shape>, Error> {
         Ok(self.map.get(full_name).cloned())
+    }
+
+    fn has_prefix(&self, prefix: &str) -> bool {
+        let search = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{}/", prefix)
+        };
+        self.map.keys().any(|k| k.starts_with(&search))
     }
 }

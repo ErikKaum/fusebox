@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::builder::FuncBuilder;
+use crate::error::Error;
 use crate::ir::Function;
 use crate::shape::Shape;
 use crate::tensor::Tensor;
@@ -67,10 +68,19 @@ impl TraceCx {
             self.prefix.push_str(scope);
             self.prefix.push('/');
         }
+        self.builder.borrow_mut().push_scope(scope);
         prev_len
     }
 
     pub fn pop_scope(&mut self, prev_len: usize) {
         self.prefix.truncate(prev_len);
+        self.builder.borrow_mut().pop_scope();
+    }
+
+    pub fn iota(&mut self, shape: Shape, dimension: i64) -> Result<Tensor, Error> {
+        let mut b = self.builder.borrow_mut();
+        let (out_shape, value) = b.iota(&shape, dimension)?;
+        drop(b);
+        Ok(Tensor::new(out_shape, value, &self.builder))
     }
 }

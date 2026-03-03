@@ -107,6 +107,89 @@ pub struct Reduce {
 }
 
 #[derive(Debug, Clone)]
+pub struct Concatenate {
+    pub operands: Vec<ValueId>,
+    pub dimension: i64,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub struct Slice {
+    pub operand: ValueId,
+    pub start_indices: Vec<i64>,
+    pub limit_indices: Vec<i64>,
+    pub strides: Vec<i64>,
+    pub out: Shape,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum CompareDirection {
+    EQ,
+    NE,
+    LT,
+    LE,
+    GT,
+    GE,
+}
+
+impl CompareDirection {
+    pub fn mlir_str(self) -> &'static str {
+        match self {
+            CompareDirection::EQ => "EQ",
+            CompareDirection::NE => "NE",
+            CompareDirection::LT => "LT",
+            CompareDirection::LE => "LE",
+            CompareDirection::GT => "GT",
+            CompareDirection::GE => "GE",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompareOp {
+    pub lhs: ValueId,
+    pub rhs: ValueId,
+    pub direction: CompareDirection,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectOp {
+    pub pred: ValueId,
+    pub on_true: ValueId,
+    pub on_false: ValueId,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub struct IotaOp {
+    pub iota_dimension: i64,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReduceArgMax {
+    pub operand: ValueId,
+    pub iota: ValueId,
+    pub init_value: ValueId,
+    pub init_index: ValueId,
+    pub dimension: i64,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatherOp {
+    pub operand: ValueId,
+    pub start_indices: ValueId,
+    pub offset_dims: Vec<i64>,
+    pub collapsed_slice_dims: Vec<i64>,
+    pub start_index_map: Vec<i64>,
+    pub index_vector_dim: i64,
+    pub slice_sizes: Vec<i64>,
+    pub out: Shape,
+}
+
+#[derive(Debug, Clone)]
 pub enum Inst {
     DotGeneral(DotGeneral),
     BroadcastInDim(BroadcastInDim),
@@ -127,12 +210,31 @@ pub enum Inst {
     Abs(UnaryOp),
     Tanh(UnaryOp),
     Logistic(UnaryOp),
+    Cosine(UnaryOp),
+    Sine(UnaryOp),
+
+    // Type conversion
+    Convert(UnaryOp),
 
     Constant(Constant),
 
     // Shape manipulation
     Reshape(UnaryOp),
     Transpose(TransposeOp),
+    Concatenate(Concatenate),
+    Slice(Slice),
 
+    // Reductions
     Reduce(Reduce),
+    ReduceArgMax(ReduceArgMax),
+
+    // Comparison and selection
+    Compare(CompareOp),
+    Select(SelectOp),
+
+    // Index generation
+    Iota(IotaOp),
+
+    // Gather (embedding lookup)
+    Gather(GatherOp),
 }

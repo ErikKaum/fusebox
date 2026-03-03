@@ -48,6 +48,10 @@ impl Signature {
         self.params.iter().filter(|p| p.kind == ParamKind::Weight)
     }
 
+    pub fn input_params(&self) -> impl Iterator<Item = &ParamSpec> {
+        self.params.iter().filter(|p| p.kind == ParamKind::Input)
+    }
+
     pub fn index_of_name(&self, name: &str) -> Option<usize> {
         self.by_name.get(name).copied()
     }
@@ -57,10 +61,36 @@ impl Signature {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ParamData {
+    F32(Vec<f32>),
+    I32(Vec<i32>),
+}
+
+impl ParamData {
+    pub fn dtype(&self) -> DType {
+        match self {
+            ParamData::F32(_) => DType::F32,
+            ParamData::I32(_) => DType::I32,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            ParamData::F32(v) => v.len(),
+            ParamData::I32(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 #[derive(Clone)]
 pub struct Inputs {
     sig: Arc<Signature>,
-    values: Vec<Option<Vec<f32>>>,
+    values: Vec<Option<ParamData>>,
 }
 
 impl Inputs {
@@ -77,38 +107,53 @@ impl Inputs {
     }
 
     pub fn set(&mut self, name: &str, data: Vec<f32>) -> Result<(), Error> {
-        let idx = self
-            .sig
-            .index_of_name(name)
-            .ok_or_else(|| Error::InvalidParam {
-                msg: format!("unknown parameter {:?}", name),
-            })?;
-        self.set_idx(idx, data)
+        let idx = self.resolve_name(name)?;
+        self.set_data(idx, ParamData::F32(data))
+    }
+
+    pub fn set_i32(&mut self, name: &str, data: Vec<i32>) -> Result<(), Error> {
+        let idx = self.resolve_name(name)?;
+        self.set_data(idx, ParamData::I32(data))
     }
 
     pub fn set_input(&mut self, name: &str, data: Vec<f32>) -> Result<(), Error> {
-        let idx = self
-            .sig
-            .index_of_name(name)
-            .ok_or_else(|| Error::InvalidParam {
-                msg: format!("unknown input {:?}", name),
-            })?;
+        let idx = self.resolve_name(name)?;
         if self.sig.spec(idx).kind == ParamKind::Weight {
             return Err(Error::InvalidParam {
                 msg: format!("cannot set weight {:?} via set_input()", name),
             });
         }
-        self.set(name, data)
+        self.set_data(idx, ParamData::F32(data))
     }
 
-    fn set_idx(&mut self, idx: usize, data: Vec<f32>) -> Result<(), Error> {
+    pub fn set_input_i32(&mut self, name: &str, data: Vec<i32>) -> Result<(), Error> {
+        let idx = self.resolve_name(name)?;
+        if self.sig.spec(idx).kind == ParamKind::Weight {
+            return Err(Error::InvalidParam {
+                msg: format!("cannot set weight {:?} via set_input_i32()", name),
+            });
+        }
+        self.set_data(idx, ParamData::I32(data))
+    }
+
+    fn resolve_name(&self, name: &str) -> Result<usize, Error> {
+        self.sig
+            .index_of_name(name)
+            .ok_or_else(|| Error::InvalidParam {
+                msg: format!("unknown parameter {:?}", name),
+            })
+    }
+
+    fn set_data(&mut self, idx: usize, data: ParamData) -> Result<(), Error> {
         let spec = self.sig.spec(idx);
 
-        if spec.shape.dtype != DType::F32 {
+        let expected_dtype = spec.shape.dtype;
+        let got_dtype = data.dtype();
+        if expected_dtype != got_dtype {
             return Err(Error::InvalidParam {
                 msg: format!(
-                    "only f32 supported for now; param {:?} has dtype {}",
-                    spec.name, spec.shape.dtype
+                    "param {:?} expects dtype {}, got {}",
+                    spec.name, expected_dtype, got_dtype
                 ),
             });
         }
@@ -130,7 +175,7 @@ impl Inputs {
         Ok(())
     }
 
-    pub fn into_ordered(self) -> Result<Vec<(Shape, Vec<f32>)>, Error> {
+    pub fn into_ordered(self) -> Result<Vec<(Shape, ParamData)>, Error> {
         let sig = self.sig;
         let mut out = Vec::with_capacity(self.values.len());
         for (i, v) in self.values.into_iter().enumerate() {

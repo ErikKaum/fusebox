@@ -1,5 +1,6 @@
 use core::fmt::Write;
 
+use crate::dtype::DType;
 use crate::ir::{Function, Inst, Module, ReduceKind};
 use crate::shape::Shape;
 use crate::value::ValueId;
@@ -95,15 +96,31 @@ pub fn print_function(func: &Function) -> String {
             Inst::Abs(op) => print_unary(&mut out, "abs", stmt.result, op, func),
             Inst::Tanh(op) => print_unary(&mut out, "tanh", stmt.result, op, func),
             Inst::Logistic(op) => print_unary(&mut out, "logistic", stmt.result, op, func),
+            Inst::Cosine(op) => print_unary(&mut out, "cosine", stmt.result, op, func),
+            Inst::Sine(op) => print_unary(&mut out, "sine", stmt.result, op, func),
 
-            Inst::Constant(op) => {
+            Inst::Convert(op) => {
+                let in_ty = value_type(func, op.operand).unwrap().mlir_tensor_type();
                 let out_ty = op.out.mlir_tensor_type();
                 writeln!(
                     &mut out,
+                    "    {} = stablehlo.convert {} : ({}) -> {}",
+                    stmt.result, op.operand, in_ty, out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Constant(op) => {
+                let out_ty = op.out.mlir_tensor_type();
+                let val_str = if op.out.dtype.is_float() {
+                    format_mlir_float(op.value)
+                } else {
+                    format!("{}", op.value as i64)
+                };
+                writeln!(
+                    &mut out,
                     "    {} = stablehlo.constant dense<{}> : {}",
-                    stmt.result,
-                    format_mlir_float(op.value),
-                    out_ty
+                    stmt.result, val_str, out_ty
                 )
                 .unwrap();
             }
@@ -175,6 +192,187 @@ pub fn print_function(func: &Function) -> String {
                     out_ty
                 )
                 .unwrap();
+            }
+
+            Inst::ReduceArgMax(op) => {
+                let val_ty = value_type(func, op.operand).unwrap().mlir_tensor_type();
+                let idx_ty = value_type(func, op.iota).unwrap().mlir_tensor_type();
+                let init_val_ty = value_type(func, op.init_value).unwrap().mlir_tensor_type();
+                let init_idx_ty = value_type(func, op.init_index).unwrap().mlir_tensor_type();
+                let operand_dtype = value_type(func, op.operand).unwrap().dtype;
+                let scalar_val_ty = Shape::new(vec![], operand_dtype).mlir_tensor_type();
+                let scalar_idx_ty = Shape::new(vec![], DType::I32).mlir_tensor_type();
+
+                let mut out_val_dims = Vec::new();
+                let operand_shape = value_type(func, op.operand).unwrap();
+                for (i, &d) in operand_shape.dims.iter().enumerate() {
+                    if i as i64 != op.dimension {
+                        out_val_dims.push(d);
+                    }
+                }
+                let out_val_ty = Shape::new(out_val_dims, operand_dtype).mlir_tensor_type();
+                let out_idx_ty = op.out.mlir_tensor_type();
+
+                let r = stmt.result.0;
+                writeln!(
+                    &mut out,
+                    "    %argmax_val_{r}, {} = \"stablehlo.reduce\"({}, {}, {}, {}) ({{",
+                    stmt.result, op.operand, op.iota, op.init_value, op.init_index
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "    ^bb0(%arg_val_0: {scalar_val_ty}, %arg_idx_0: {scalar_idx_ty}, %arg_val_1: {scalar_val_ty}, %arg_idx_1: {scalar_idx_ty}):"
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "      %cmp_{r} = stablehlo.compare GE, %arg_val_0, %arg_val_1, FLOAT : ({scalar_val_ty}, {scalar_val_ty}) -> tensor<i1>"
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "      %sel_val_{r} = stablehlo.select %cmp_{r}, %arg_val_0, %arg_val_1 : (tensor<i1>, {scalar_val_ty}, {scalar_val_ty}) -> {scalar_val_ty}"
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "      %sel_idx_{r} = stablehlo.select %cmp_{r}, %arg_idx_0, %arg_idx_1 : (tensor<i1>, {scalar_idx_ty}, {scalar_idx_ty}) -> {scalar_idx_ty}"
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "      stablehlo.return %sel_val_{r}, %sel_idx_{r} : {scalar_val_ty}, {scalar_idx_ty}"
+                )
+                .unwrap();
+                writeln!(
+                    &mut out,
+                    "    }}) {{\n      dimensions = array<i64: {}>\n    }} : ({}, {}, {}, {}) -> ({}, {})",
+                    op.dimension,
+                    val_ty, idx_ty, init_val_ty, init_idx_ty,
+                    out_val_ty, out_idx_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Concatenate(op) => {
+                let operand_strs: Vec<String> =
+                    op.operands.iter().map(|v| format!("{}", v)).collect();
+                let operand_types: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|&v| value_type(func, v).unwrap().mlir_tensor_type())
+                    .collect();
+                let out_ty = op.out.mlir_tensor_type();
+                writeln!(
+                    &mut out,
+                    "    {} = stablehlo.concatenate {}, dim = {} : ({}) -> {}",
+                    stmt.result,
+                    operand_strs.join(", "),
+                    op.dimension,
+                    operand_types.join(", "),
+                    out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Slice(op) => {
+                let in_ty = value_type(func, op.operand).unwrap().mlir_tensor_type();
+                let out_ty = op.out.mlir_tensor_type();
+                let ranges: Vec<String> = op
+                    .start_indices
+                    .iter()
+                    .zip(op.limit_indices.iter())
+                    .zip(op.strides.iter())
+                    .map(|((&s, &l), &st)| {
+                        if st == 1 {
+                            format!("{s}:{l}")
+                        } else {
+                            format!("{s}:{l}:{st}")
+                        }
+                    })
+                    .collect();
+                writeln!(
+                    &mut out,
+                    "    {} = stablehlo.slice {} [{}] : ({}) -> {}",
+                    stmt.result,
+                    op.operand,
+                    ranges.join(", "),
+                    in_ty,
+                    out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Compare(op) => {
+                let lhs_shape = value_type(func, op.lhs).unwrap();
+                let compare_type = if lhs_shape.dtype.is_float() {
+                    "FLOAT"
+                } else {
+                    "SIGNED"
+                };
+                let lhs_ty = lhs_shape.mlir_tensor_type();
+                let rhs_ty = value_type(func, op.rhs).unwrap().mlir_tensor_type();
+                let out_ty = op.out.mlir_tensor_type();
+                writeln!(
+                    &mut out,
+                    "    {} = stablehlo.compare {}, {}, {}, {} : ({}, {}) -> {}",
+                    stmt.result,
+                    op.direction.mlir_str(),
+                    op.lhs,
+                    op.rhs,
+                    compare_type,
+                    lhs_ty,
+                    rhs_ty,
+                    out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Select(op) => {
+                let pred_ty = value_type(func, op.pred).unwrap().mlir_tensor_type();
+                let true_ty = value_type(func, op.on_true).unwrap().mlir_tensor_type();
+                let false_ty = value_type(func, op.on_false).unwrap().mlir_tensor_type();
+                let out_ty = op.out.mlir_tensor_type();
+                writeln!(
+                    &mut out,
+                    "    {} = stablehlo.select {}, {}, {} : ({}, {}, {}) -> {}",
+                    stmt.result, op.pred, op.on_true, op.on_false, pred_ty, true_ty, false_ty, out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Iota(op) => {
+                let out_ty = op.out.mlir_tensor_type();
+                writeln!(
+                    &mut out,
+                    "    {} = stablehlo.iota dim = {} : {}",
+                    stmt.result, op.iota_dimension, out_ty
+                )
+                .unwrap();
+            }
+
+            Inst::Gather(op) => {
+                let operand_ty = value_type(func, op.operand).unwrap().mlir_tensor_type();
+                let indices_ty = value_type(func, op.start_indices)
+                    .unwrap()
+                    .mlir_tensor_type();
+                let out_ty = op.out.mlir_tensor_type();
+                writeln!(
+                    &mut out,
+                    "    {} = \"stablehlo.gather\"({}, {}) {{dimension_numbers = #stablehlo.gather<offset_dims = [{}], collapsed_slice_dims = [{}], start_index_map = [{}], index_vector_dim = {}>, slice_sizes = array<i64: {}>}} : ({}, {}) -> {}",
+                    stmt.result,
+                    op.operand,
+                    op.start_indices,
+                    join_i64(&op.offset_dims),
+                    join_i64(&op.collapsed_slice_dims),
+                    join_i64(&op.start_index_map),
+                    op.index_vector_dim,
+                    join_i64(&op.slice_sizes),
+                    operand_ty,
+                    indices_ty,
+                    out_ty
+                ).unwrap();
             }
         }
     }
@@ -295,9 +493,19 @@ fn inst_out_shape(inst: &Inst) -> &Shape {
         | Inst::Abs(op)
         | Inst::Tanh(op)
         | Inst::Logistic(op)
+        | Inst::Cosine(op)
+        | Inst::Sine(op)
+        | Inst::Convert(op)
         | Inst::Reshape(op) => &op.out,
         Inst::Constant(op) => &op.out,
         Inst::Transpose(op) => &op.out,
         Inst::Reduce(op) => &op.out,
+        Inst::ReduceArgMax(op) => &op.out,
+        Inst::Concatenate(op) => &op.out,
+        Inst::Slice(op) => &op.out,
+        Inst::Compare(op) => &op.out,
+        Inst::Select(op) => &op.out,
+        Inst::Iota(op) => &op.out,
+        Inst::Gather(op) => &op.out,
     }
 }

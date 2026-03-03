@@ -9,6 +9,13 @@ use crate::trace::TraceCx;
 /// In practice it will be backed by a safetensors header map.
 pub trait ShapeProvider {
     fn shape_of(&self, full_name: &str) -> Result<Option<Shape>, Error>;
+
+    /// Returns true if any known weight key starts with `prefix`.
+    /// Used by the `Module` derive to discover `Vec<T>` layer counts.
+    fn has_prefix(&self, prefix: &str) -> bool {
+        let _ = prefix;
+        false
+    }
 }
 
 /// Implemented by structs that can allocate their weights as graph parameters.

@@ -1,7 +1,9 @@
+use crate::dtype::DType;
 use crate::error::Error;
 use crate::ir::{
-    BinaryOp, BroadcastInDim, Constant, DotGeneral, Function, Inst, Param, ParamKind, Reduce,
-    ReduceKind, Stmt, TransposeOp, UnaryOp,
+    BinaryOp, BroadcastInDim, CompareDirection, CompareOp, Concatenate, Constant, DotGeneral,
+    Function, GatherOp, Inst, IotaOp, Param, ParamKind, Reduce, ReduceArgMax, ReduceKind, SelectOp,
+    Slice, Stmt, TransposeOp, UnaryOp,
 };
 use crate::shape::Shape;
 use crate::value::ValueId;
@@ -9,6 +11,7 @@ use crate::value::ValueId;
 pub struct FuncBuilder {
     func: Function,
     next_id: u32,
+    scope: Vec<String>,
 }
 
 impl FuncBuilder {
@@ -16,7 +19,20 @@ impl FuncBuilder {
         Self {
             func: Function::new(name),
             next_id: 0,
+            scope: Vec::new(),
         }
+    }
+
+    pub fn push_scope(&mut self, name: &str) {
+        self.scope.push(name.to_string());
+    }
+
+    pub fn pop_scope(&mut self) {
+        self.scope.pop();
+    }
+
+    pub fn current_scope(&self) -> String {
+        self.scope.join("/")
     }
 
     pub fn into_function(self) -> Function {
@@ -235,6 +251,32 @@ impl FuncBuilder {
         self.unary_op(shape, val, Inst::Logistic)
     }
 
+    pub fn cosine(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Cosine)
+    }
+
+    pub fn sine(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
+        self.unary_op(shape, val, Inst::Sine)
+    }
+
+    pub fn convert(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        target_dtype: DType,
+    ) -> (Shape, ValueId) {
+        let out = Shape::new(shape.dims.clone(), target_dtype);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Convert(UnaryOp {
+                operand: val,
+                out: out.clone(),
+            }),
+        });
+        (out, result)
+    }
+
     // ── Composite activations ───────────────────────────────────────
 
     pub fn silu(&mut self, shape: &Shape, val: ValueId) -> (Shape, ValueId) {
@@ -442,6 +484,50 @@ impl FuncBuilder {
         Ok((out_shape, result))
     }
 
+    // ── Expand (broadcast size-1 dims) ────────────────────────────
+
+    pub fn expand(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        target_dims: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        if target_dims.len() != shape.rank() {
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "expand: target rank {} != source rank {}",
+                    target_dims.len(),
+                    shape.rank()
+                ),
+            });
+        }
+        for (i, (&src, &tgt)) in shape.dims.iter().zip(target_dims.iter()).enumerate() {
+            if src != tgt && src != 1 {
+                return Err(Error::InvalidParam {
+                    msg: format!(
+                        "expand: dim {} has size {} (not 1), cannot expand to {}",
+                        i, src, tgt
+                    ),
+                });
+            }
+        }
+        if shape.dims == target_dims {
+            return Ok((shape.clone(), val));
+        }
+        let out_shape = Shape::new(target_dims.to_vec(), shape.dtype);
+        let dims: Vec<i64> = (0..shape.rank() as i64).collect();
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::BroadcastInDim(BroadcastInDim {
+                operand: val,
+                out: out_shape.clone(),
+                dims,
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
     // ── Reductions ──────────────────────────────────────────────────
 
     fn reduce(
@@ -514,6 +600,62 @@ impl FuncBuilder {
         axes: &[i64],
     ) -> Result<(Shape, ValueId), Error> {
         self.reduce(shape, val, axes, ReduceKind::Min)
+    }
+
+    pub fn argmax(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        axis: i64,
+    ) -> Result<(Shape, ValueId), Error> {
+        let rank = shape.rank();
+        let a = normalize_axis(axis, rank)?;
+
+        let mut out_dims = Vec::new();
+        for (i, &d) in shape.dims.iter().enumerate() {
+            if i != a {
+                out_dims.push(d);
+            }
+        }
+        let out_shape = Shape::new(out_dims, DType::I32);
+
+        let iota_shape = Shape::new(shape.dims.clone(), DType::I32);
+        let iota_id = self.fresh();
+        self.func.insts.push(Stmt {
+            result: iota_id,
+            inst: Inst::Iota(IotaOp {
+                iota_dimension: a as i64,
+                out: iota_shape,
+            }),
+        });
+
+        let init_val_shape = Shape::new(vec![], shape.dtype);
+        let init_val_id = self.emit_constant(f64::NEG_INFINITY, &init_val_shape);
+
+        let init_idx_shape = Shape::new(vec![], DType::I32);
+        let init_idx_id = self.fresh();
+        self.func.insts.push(Stmt {
+            result: init_idx_id,
+            inst: Inst::Constant(Constant {
+                value: 0.0,
+                out: init_idx_shape,
+            }),
+        });
+
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::ReduceArgMax(ReduceArgMax {
+                operand: val,
+                iota: iota_id,
+                init_value: init_val_id,
+                init_index: init_idx_id,
+                dimension: a as i64,
+                out: out_shape.clone(),
+            }),
+        });
+
+        Ok((out_shape, result))
     }
 
     // ── Matmul (N-dimensional) ──────────────────────────────────────
@@ -622,6 +764,252 @@ impl FuncBuilder {
             }),
         });
 
+        Ok((out_shape, result))
+    }
+
+    // ── Concatenate ─────────────────────────────────────────────────
+
+    pub fn concatenate(
+        &mut self,
+        shapes: &[&Shape],
+        vals: &[ValueId],
+        axis: i64,
+    ) -> Result<(Shape, ValueId), Error> {
+        if shapes.is_empty() {
+            return Err(Error::InvalidParam {
+                msg: "concatenate: need at least one tensor".into(),
+            });
+        }
+        let rank = shapes[0].rank();
+        let a = normalize_axis(axis, rank)?;
+        let dtype = shapes[0].dtype;
+
+        for (i, s) in shapes.iter().enumerate().skip(1) {
+            if s.dtype != dtype {
+                return Err(Error::dtype("concatenate", dtype, s.dtype));
+            }
+            if s.rank() != rank {
+                return Err(Error::InvalidParam {
+                    msg: format!(
+                        "concatenate: tensor {} has rank {}, expected {}",
+                        i,
+                        s.rank(),
+                        rank
+                    ),
+                });
+            }
+            for d in 0..rank {
+                if d != a && s.dims[d] != shapes[0].dims[d] {
+                    return Err(Error::InvalidParam {
+                        msg: format!(
+                            "concatenate: dim {} mismatch between tensor 0 ({}) and tensor {} ({})",
+                            d, shapes[0].dims[d], i, s.dims[d]
+                        ),
+                    });
+                }
+            }
+        }
+
+        let concat_size: i64 = shapes.iter().map(|s| s.dims[a]).sum();
+        let mut out_dims = shapes[0].dims.clone();
+        out_dims[a] = concat_size;
+        let out_shape = Shape::new(out_dims, dtype);
+
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Concatenate(Concatenate {
+                operands: vals.to_vec(),
+                dimension: a as i64,
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    // ── Slice ───────────────────────────────────────────────────────
+
+    pub fn slice(
+        &mut self,
+        shape: &Shape,
+        val: ValueId,
+        start_indices: &[i64],
+        limit_indices: &[i64],
+        strides: &[i64],
+    ) -> Result<(Shape, ValueId), Error> {
+        let rank = shape.rank();
+        if start_indices.len() != rank || limit_indices.len() != rank || strides.len() != rank {
+            return Err(Error::InvalidParam {
+                msg: format!("slice: indices length must match rank {}", rank),
+            });
+        }
+
+        let mut out_dims = Vec::with_capacity(rank);
+        for i in 0..rank {
+            if start_indices[i] < 0 || limit_indices[i] > shape.dims[i] || strides[i] <= 0 {
+                return Err(Error::InvalidParam {
+                    msg: format!(
+                        "slice: invalid range for dim {}: start={}, limit={}, stride={}, size={}",
+                        i, start_indices[i], limit_indices[i], strides[i], shape.dims[i]
+                    ),
+                });
+            }
+            let size = (limit_indices[i] - start_indices[i] + strides[i] - 1) / strides[i];
+            out_dims.push(size);
+        }
+
+        let out_shape = Shape::new(out_dims, shape.dtype);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Slice(Slice {
+                operand: val,
+                start_indices: start_indices.to_vec(),
+                limit_indices: limit_indices.to_vec(),
+                strides: strides.to_vec(),
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    // ── Comparison ──────────────────────────────────────────────────
+
+    pub fn compare(
+        &mut self,
+        a_shape: &Shape,
+        a_val: ValueId,
+        b_shape: &Shape,
+        b_val: ValueId,
+        direction: CompareDirection,
+    ) -> Result<(Shape, ValueId), Error> {
+        let (broadcast_shape, a_val, b_val) =
+            self.broadcast_pair(a_shape, a_val, b_shape, b_val)?;
+        let out_shape = Shape::new(broadcast_shape.dims.clone(), DType::Bool);
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Compare(CompareOp {
+                lhs: a_val,
+                rhs: b_val,
+                direction,
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    // ── Select ──────────────────────────────────────────────────────
+
+    pub fn select(
+        &mut self,
+        pred_shape: &Shape,
+        pred_val: ValueId,
+        true_shape: &Shape,
+        true_val: ValueId,
+        false_shape: &Shape,
+        false_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        if pred_shape.dtype != DType::Bool {
+            return Err(Error::InvalidParam {
+                msg: format!("select: predicate must be Bool, got {}", pred_shape.dtype),
+            });
+        }
+        if true_shape != false_shape {
+            return Err(Error::ShapeMismatch {
+                op: "select",
+                a: true_shape.clone(),
+                b: false_shape.clone(),
+            });
+        }
+        let pred_dims_no_dtype = &pred_shape.dims;
+        let true_dims = &true_shape.dims;
+        if pred_dims_no_dtype != true_dims {
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "select: pred dims {:?} != value dims {:?}",
+                    pred_dims_no_dtype, true_dims
+                ),
+            });
+        }
+
+        let out_shape = true_shape.clone();
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Select(SelectOp {
+                pred: pred_val,
+                on_true: true_val,
+                on_false: false_val,
+                out: out_shape.clone(),
+            }),
+        });
+        Ok((out_shape, result))
+    }
+
+    // ── Iota ────────────────────────────────────────────────────────
+
+    pub fn iota(&mut self, shape: &Shape, dimension: i64) -> Result<(Shape, ValueId), Error> {
+        let a = normalize_axis(dimension, shape.rank())?;
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Iota(IotaOp {
+                iota_dimension: a as i64,
+                out: shape.clone(),
+            }),
+        });
+        Ok((shape.clone(), result))
+    }
+
+    // ── Gather (embedding lookup) ───────────────────────────────────
+
+    pub fn embedding_lookup(
+        &mut self,
+        table_shape: &Shape,
+        table_val: ValueId,
+        indices_shape: &Shape,
+        indices_val: ValueId,
+    ) -> Result<(Shape, ValueId), Error> {
+        if table_shape.rank() != 2 {
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "embedding_lookup: table must be rank-2 [vocab, dim], got rank {}",
+                    table_shape.rank()
+                ),
+            });
+        }
+        if !indices_shape.dtype.is_integer() {
+            return Err(Error::InvalidParam {
+                msg: format!(
+                    "embedding_lookup: indices must be integer type, got {}",
+                    indices_shape.dtype
+                ),
+            });
+        }
+
+        let embed_dim = table_shape.dims[1];
+        let mut out_dims = indices_shape.dims.clone();
+        out_dims.push(embed_dim);
+        let out_shape = Shape::new(out_dims, table_shape.dtype);
+
+        let index_vector_dim = indices_shape.rank() as i64;
+        let slice_sizes = vec![1, embed_dim];
+
+        let result = self.fresh();
+        self.func.insts.push(Stmt {
+            result,
+            inst: Inst::Gather(GatherOp {
+                operand: table_val,
+                start_indices: indices_val,
+                offset_dims: vec![index_vector_dim],
+                collapsed_slice_dims: vec![0],
+                start_index_map: vec![0],
+                index_vector_dim,
+                slice_sizes,
+                out: out_shape.clone(),
+            }),
+        });
         Ok((out_shape, result))
     }
 }

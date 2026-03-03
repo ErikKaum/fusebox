@@ -92,6 +92,45 @@ fn expand_module(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 }
             }
 
+            FieldKind::VecModule(ref inner_ty) => {
+                if param_opts.name.is_some() {
+                    return Err(Error::new(
+                        field.span(),
+                        r#"use #[module(...)] on Vec<T> fields; #[param(...)] is only for Tensor fields"#,
+                    ));
+                }
+                if module_opts.skip {
+                    init_stmts.push(quote! {
+                        let #ident: Vec<#inner_ty> = Vec::new();
+                    });
+                } else {
+                    let sub_name = module_opts.name.unwrap_or_else(|| field_name.clone());
+                    let sub_lit = LitStr::new(&sub_name, ident.span());
+
+                    init_stmts.push(quote! {
+                        let #ident = {
+                            let __scope = cx.push_scope(#sub_lit);
+                            let mut __items: Vec<#inner_ty> = Vec::new();
+                            let mut __idx: usize = 0;
+                            loop {
+                                let __probe = format!("{}/", cx.qualify(&__idx.to_string()));
+                                if !shapes.has_prefix(&__probe) { break; }
+                                __items.push(
+                                    <#inner_ty as ::fusebox::module_api::Module>::trace(
+                                        cx,
+                                        &__idx.to_string(),
+                                        shapes,
+                                    )?
+                                );
+                                __idx += 1;
+                            }
+                            cx.pop_scope(__scope);
+                            __items
+                        };
+                    });
+                }
+            }
+
             FieldKind::SubModule => {
                 if param_opts.name.is_some() {
                     return Err(Error::new(
@@ -151,10 +190,11 @@ fn expand_module(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum FieldKind {
     Tensor,
     OptionTensor,
+    VecModule(Type),
     SubModule,
 }
 
@@ -192,6 +232,29 @@ fn classify_field_type(ty: &Type) -> syn::Result<FieldKind> {
                     });
                 }
 
+                return Ok(FieldKind::SubModule);
+            }
+
+            if seg.ident == "Vec" {
+                let args = match &seg.arguments {
+                    PathArguments::AngleBracketed(ab) => ab,
+                    _ => return Ok(FieldKind::SubModule),
+                };
+                if args.args.len() == 1 {
+                    if let syn::GenericArgument::Type(inner_ty) = args.args.first().unwrap() {
+                        if let Type::Path(inner_tp) = inner_ty {
+                            let is_tensor = inner_tp
+                                .path
+                                .segments
+                                .last()
+                                .map(|s| s.ident == "Tensor")
+                                .unwrap_or(false);
+                            if !is_tensor {
+                                return Ok(FieldKind::VecModule(inner_ty.clone()));
+                            }
+                        }
+                    }
+                }
                 return Ok(FieldKind::SubModule);
             }
 

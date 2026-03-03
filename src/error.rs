@@ -47,6 +47,11 @@ pub enum Error {
     },
     RuntimeError(String),
     CompilationError(String),
+    ValidationError(String),
+    Scoped {
+        scope: String,
+        inner: Box<Error>,
+    },
 }
 
 impl Error {
@@ -64,6 +69,17 @@ impl Error {
             op,
             a: a.clone(),
             b: b.clone(),
+        }
+    }
+
+    pub fn with_scope(self, scope: impl Into<String>) -> Self {
+        let scope = scope.into();
+        if scope.is_empty() {
+            return self;
+        }
+        Error::Scoped {
+            scope,
+            inner: Box::new(self),
         }
     }
 }
@@ -115,6 +131,10 @@ impl fmt::Display for Error {
             }
             Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
             Error::CompilationError(msg) => write!(f, "compilation error: {msg}"),
+            Error::ValidationError(msg) => write!(f, "validation error: {msg}"),
+            Error::Scoped { scope, inner } => {
+                write!(f, "in {scope}: {inner}")
+            }
         }
     }
 }

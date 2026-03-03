@@ -1,21 +1,110 @@
+use core::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pjrt::{
-    Buffer, Client, F32, HostBuffer, LoadedExecutable, Program, ProgramFormat, TypedHostBuffer,
+    Buffer, Client, F32, HostBuffer, I32, LoadedExecutable, Program, ProgramFormat, TypedHostBuffer,
 };
 
+use crate::dtype::DType;
 use crate::error::Error;
 use crate::ir::{Function, Module};
 use crate::print_mlir::print_module;
-use crate::signature::{Inputs, Signature};
+use crate::signature::{Inputs, ParamData, Signature};
 use crate::weights::Weights;
+
+// ── TensorData ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum TensorData {
+    F32(Vec<f32>),
+    I32(Vec<i32>),
+}
+
+impl TensorData {
+    pub fn dtype(&self) -> DType {
+        match self {
+            TensorData::F32(_) => DType::F32,
+            TensorData::I32(_) => DType::I32,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            TensorData::F32(v) => v.len(),
+            TensorData::I32(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn as_f32(&self) -> Option<&[f32]> {
+        match self {
+            TensorData::F32(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_i32(&self) -> Option<&[i32]> {
+        match self {
+            TensorData::I32(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+// ── HostTensor ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct HostTensor {
     pub dims: Vec<i64>,
-    pub data: Vec<f32>,
+    pub data: TensorData,
 }
+
+impl HostTensor {
+    pub fn shape(&self) -> &[i64] {
+        &self.dims
+    }
+
+    pub fn numel(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.data.dtype()
+    }
+
+    pub fn to_f32(&self) -> Option<&[f32]> {
+        self.data.as_f32()
+    }
+
+    pub fn to_i32(&self) -> Option<&[i32]> {
+        self.data.as_i32()
+    }
+
+    pub fn to_f32_vec(&self) -> Result<Vec<f32>, Error> {
+        self.to_f32()
+            .map(|s| s.to_vec())
+            .ok_or_else(|| Error::RuntimeError(format!("expected f32, got {:?}", self.dtype())))
+    }
+}
+
+impl fmt::Display for HostTensor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shape_str: Vec<String> = self.dims.iter().map(|d| d.to_string()).collect();
+        write!(
+            f,
+            "HostTensor([{}], {}, {} elements)",
+            shape_str.join(", "),
+            self.dtype(),
+            self.numel()
+        )
+    }
+}
+
+// ── CompiledModel ───────────────────────────────────────────────────
 
 pub struct CompiledModel {
     client: Client,
@@ -30,8 +119,10 @@ pub struct Session<'a> {
 
 impl CompiledModel {
     pub fn from_function(func: &Function, plugin_path: impl AsRef<Path>) -> Result<Self, Error> {
+        let mut main_func = func.clone();
+        main_func.name = "main".to_string();
         let module = Module {
-            functions: vec![func.clone()],
+            functions: vec![main_func],
         };
         let mlir = print_module(&module);
         Self::from_mlir_text_and_sig(&mlir, Signature::from_function(func), plugin_path)
@@ -88,17 +179,21 @@ impl CompiledModel {
 
         let mut device_inputs = Vec::with_capacity(ordered.len());
         for (shape, data) in ordered {
-            let buf = f32_host_buffer(&data, &shape.dims)
+            let host_buf = match data {
+                ParamData::F32(v) => make_f32_host_buffer(&v, &shape.dims),
+                ParamData::I32(v) => make_i32_host_buffer(&v, &shape.dims),
+            };
+            let buf = host_buf
                 .copy_to_sync(&self.client)
                 .map_err(|e| Error::RuntimeError(format!("copy input to device: {}", e)))?;
             device_inputs.push(buf);
         }
 
-        execute_and_extract_f32(&self.exec, device_inputs)
+        execute_and_extract(&self.exec, device_inputs)
     }
 }
 
-impl<'a> Session<'a> {
+impl Session<'_> {
     pub fn run(
         &self,
         set_inputs: impl FnOnce(&mut Inputs) -> Result<(), Error>,
@@ -110,7 +205,9 @@ impl<'a> Session<'a> {
     }
 }
 
-fn f32_host_buffer(data: &[f32], dims: &[i64]) -> HostBuffer {
+// ── Buffer helpers ──────────────────────────────────────────────────
+
+fn make_f32_host_buffer(data: &[f32], dims: &[i64]) -> HostBuffer {
     let typed = TypedHostBuffer::<F32>::builder()
         .data::<f32>(data.to_vec())
         .maybe_dims(Some(dims.to_vec()))
@@ -118,7 +215,15 @@ fn f32_host_buffer(data: &[f32], dims: &[i64]) -> HostBuffer {
     HostBuffer::from(typed)
 }
 
-fn execute_and_extract_f32(
+fn make_i32_host_buffer(data: &[i32], dims: &[i64]) -> HostBuffer {
+    let typed = TypedHostBuffer::<I32>::builder()
+        .data::<i32>(data.to_vec())
+        .maybe_dims(Some(dims.to_vec()))
+        .build();
+    HostBuffer::from(typed)
+}
+
+fn execute_and_extract(
     exec: &LoadedExecutable,
     arg_buffers: Vec<Buffer>,
 ) -> Result<HostTensor, Error> {
@@ -139,10 +244,14 @@ fn execute_and_extract_f32(
     match host_out {
         HostBuffer::F32(tb) => Ok(HostTensor {
             dims: tb.dims().to_vec(),
-            data: tb.data().to_vec(),
+            data: TensorData::F32(tb.data().to_vec()),
+        }),
+        HostBuffer::I32(tb) => Ok(HostTensor {
+            dims: tb.dims().to_vec(),
+            data: TensorData::I32(tb.data().to_vec()),
         }),
         other => Err(Error::RuntimeError(format!(
-            "expected f32 output, got {:?}",
+            "unsupported output type: {:?}",
             other
         ))),
     }
