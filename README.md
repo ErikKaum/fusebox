@@ -86,12 +86,6 @@ just download-pjrt
 
 This downloads `libpjrt_cpu.dylib` into the project root. Set `PJRT_CPU_PLUGIN` to override the path.
 
-### Build
-
-```bash
-cargo build
-```
-
 ### Run the linear example
 
 ```bash
@@ -102,10 +96,16 @@ cargo run --example linear
 
 ### Run the SmolLM2 chat example
 
+Running chat will compile the graph if there's no pre-compiled artifact. You'll see this in the logs.
 ```bash
 just download-smollm2                          # download weights + tokenizer
-cargo run --example smollm2 -- compile         # compile the model graph
-cargo run --example smollm2 -- chat --compiled examples/smollm2/artifacts/smollm2.compiled
+cargo build --release --example smollm2
+./target/release/examples/smollm2 chat
+```
+And then try compiling the model graph and starting the chat 
+```bash
+./target/release/examples/smollm2 compile         # compile the model graph
+./target/release/examples/smollm2 chat --compiled examples/smollm2/artifacts/smollm2.compiled
 ```
 
 ## Debugging
