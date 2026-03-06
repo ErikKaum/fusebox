@@ -6,7 +6,7 @@ Trace-based tensor compiler for Rust. Build computation graphs with a familiar t
 
 Fusebox started as an exercise in understanding how [ZML](https://github.com/zml/zml) works under the hood, the idea was to rebuild the core trace-compile-run loop from scratch in Rust and see what it actually takes to go from tensor ops to running hardware. What began as a learning project turned into something genuinely fun to hack on, and it kept growing from there.
 
-I wrote [a blog](https://www.erikkaum.com/blog/zml/) that hopefully explains the stack and help you build your own toy/educational ML framework
+I wrote [a blog](https://www.erikkaum.com/blog/zml/) that hopefully clarifies how the stack works and helps you build your own toy/educational ML framework
 
 And despite being educational, it even runs the `SmolLM2-135M-Instruct` model on CPU:
 
