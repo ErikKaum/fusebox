@@ -83,10 +83,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 You need a PJRT plugin for your target backend. For CPU on Apple Silicon:
 
 ```bash
-just download-pjrt
+just download-pjrt-darwin
 ```
-
-This downloads `libpjrt_cpu.dylib` into the project root. Set `PJRT_CPU_PLUGIN` to override the path.
+And for linux:
+```bash
+just download-pjrt-linux
+```
+This downloads `libpjrt_cpu.dylib` or `libpjrt_cpu.so` into the project root. Set `PJRT_CPU_PLUGIN` to override the path.
 
 ### Run the linear example
 

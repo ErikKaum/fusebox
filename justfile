@@ -21,8 +21,13 @@ ci: fmt-check clippy test
 download-smollm2:
     uv run examples/smollm2/download-smollm2.py
 
-download-pjrt:
+download-pjrt-darwin:
     curl -L https://github.com/zml/pjrt-artifacts/releases/download/v0.2.2/pjrt-cpu_darwin-arm64.tar.gz -o pjrt-cpu.tar.gz
+    tar -xzf pjrt-cpu.tar.gz
+    rm pjrt-cpu.tar.gz
+
+download-pjrt-linux:
+    curl -L https://github.com/zml/pjrt-artifacts/releases/download/v0.2.2/pjrt-cpu_linux-amd64.tar.gz -o pjrt-cpu.tar.gz
     tar -xzf pjrt-cpu.tar.gz
     rm pjrt-cpu.tar.gz
 

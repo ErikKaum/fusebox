@@ -341,5 +341,5 @@ pub fn default_cpu_plugin_path() -> PathBuf {
     if dylib.exists() {
         return dylib;
     }
-    PathBuf::from("pjrt_c_api_cpu_plugin.so")
+    PathBuf::from("libpjrt_cpu.so")
 }
