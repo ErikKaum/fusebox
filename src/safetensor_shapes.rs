@@ -31,9 +31,9 @@ impl SafeTensorShapes {
             // upstream `pjrt` crate lacks bf16/f16 host-buffer support.
             // When that's fixed, this can preserve the original dtype.
             let dtype = match tv.dtype() {
-                safetensors::Dtype::F32
-                | safetensors::Dtype::F16
-                | safetensors::Dtype::BF16 => DType::F32,
+                safetensors::Dtype::F32 | safetensors::Dtype::F16 | safetensors::Dtype::BF16 => {
+                    DType::F32
+                }
                 other => {
                     return Err(Error::UnsupportedDType {
                         key: name.to_string(),

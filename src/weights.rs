@@ -42,12 +42,18 @@ impl Weights {
 
             // Try the canonical slash-based name first, then fall back to
             // dot-separated keys (raw HuggingFace convention).
-            let tv = st.tensor(&p.name).or_else(|_| {
-                let dot_name = p.name.replace('/', ".");
-                st.tensor(&dot_name)
-            }).map_err(|e| {
-                Error::RuntimeError(format!("missing weight {:?} in safetensors: {}", p.name, e))
-            })?;
+            let tv = st
+                .tensor(&p.name)
+                .or_else(|_| {
+                    let dot_name = p.name.replace('/', ".");
+                    st.tensor(&dot_name)
+                })
+                .map_err(|e| {
+                    Error::RuntimeError(format!(
+                        "missing weight {:?} in safetensors: {}",
+                        p.name, e
+                    ))
+                })?;
 
             let file_shape: Vec<i64> = tv.shape().iter().map(|&d| d as i64).collect();
             if file_shape != p.shape.dims {

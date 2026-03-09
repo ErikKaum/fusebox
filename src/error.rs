@@ -1,4 +1,5 @@
 use core::fmt;
+use std::path::PathBuf;
 
 use crate::{dtype::DType, shape::Shape};
 
@@ -51,6 +52,10 @@ pub enum Error {
     ValidationError(String),
     IoError(String),
     SerializationError(String),
+    PluginNotFound {
+        path: PathBuf,
+        hint: String,
+    },
     Scoped {
         scope: String,
         inner: Box<Error>,
@@ -138,6 +143,9 @@ impl fmt::Display for Error {
             Error::ValidationError(msg) => write!(f, "validation error: {msg}"),
             Error::IoError(msg) => write!(f, "io error: {msg}"),
             Error::SerializationError(msg) => write!(f, "serialization error: {msg}"),
+            Error::PluginNotFound { path, hint } => {
+                write!(f, "PJRT plugin not found at '{}'. {}", path.display(), hint)
+            }
             Error::Scoped { scope, inner } => {
                 write!(f, "in {scope}: {inner}")
             }

@@ -344,7 +344,14 @@ pub fn print_function(func: &Function) -> String {
                 writeln!(
                     &mut out,
                     "    {} = stablehlo.select {}, {}, {} : ({}, {}, {}) -> {}",
-                    stmt.result, op.pred, op.on_true, op.on_false, pred_ty, true_ty, false_ty, out_ty
+                    stmt.result,
+                    op.pred,
+                    op.on_true,
+                    op.on_false,
+                    pred_ty,
+                    true_ty,
+                    false_ty,
+                    out_ty
                 )
                 .unwrap();
             }

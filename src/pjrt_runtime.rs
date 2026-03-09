@@ -241,8 +241,7 @@ impl CompiledModel {
             ));
         }
 
-        let sig_len =
-            u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+        let sig_len = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
 
         if data.len() < 8 + sig_len {
             return Err(Error::SerializationError(
@@ -332,14 +331,35 @@ fn execute_and_extract(
 }
 
 /// Resolve the CPU PJRT plugin path: check `PJRT_CPU_PLUGIN` env var,
-/// then fall back to platform-specific default names.
-pub fn default_cpu_plugin_path() -> PathBuf {
+/// then fall back to default names.
+///
+/// Returns an error immediately if no plugin can be found
+pub fn default_cpu_plugin_path() -> Result<PathBuf, Error> {
     if let Ok(p) = std::env::var("PJRT_CPU_PLUGIN") {
-        return PathBuf::from(p);
+        let path = PathBuf::from(&p);
+        if !path.exists() {
+            return Err(Error::PluginNotFound {
+                path,
+                hint: format!("PJRT_CPU_PLUGIN was set to '{p}' but the file does not exist."),
+            });
+        }
+        return Ok(path);
     }
+
     let dylib = PathBuf::from("libpjrt_cpu.dylib");
     if dylib.exists() {
-        return dylib;
+        return Ok(dylib);
     }
-    PathBuf::from("libpjrt_cpu.so")
+
+    let so = PathBuf::from("libpjrt_cpu.so");
+    if so.exists() {
+        return Ok(so);
+    }
+
+    Err(Error::PluginNotFound {
+        path: PathBuf::from("libpjrt_cpu.{dylib,so}"),
+        hint: "No CPU PJRT plugin found. Check the justfile on how to download it. \
+        Or set the PJRT_CPU_PLUGIN env var to the path of your plugin."
+            .into(),
+    })
 }

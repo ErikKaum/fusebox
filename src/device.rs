@@ -19,10 +19,10 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn cpu() -> Self {
-        Device {
-            plugin_path: default_cpu_plugin_path(),
-        }
+    pub fn cpu() -> Result<Self, Error> {
+        Ok(Device {
+            plugin_path: default_cpu_plugin_path()?,
+        })
     }
 
     pub fn from_plugin(path: impl Into<PathBuf>) -> Self {
@@ -68,10 +68,7 @@ impl Device {
         })?;
 
         let api = pjrt::plugin(plugin_str).load().map_err(|e| {
-            Error::CompilationError(format!(
-                "load PJRT plugin {:?}: {}",
-                self.plugin_path, e
-            ))
+            Error::CompilationError(format!("load PJRT plugin {:?}: {}", self.plugin_path, e))
         })?;
 
         Client::builder(&api)

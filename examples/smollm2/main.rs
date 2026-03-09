@@ -24,7 +24,10 @@ enum Command {
     /// Compile the model graph and save the artifact to disk.
     Compile {
         /// Path to the safetensors checkpoint (needed for weight shapes).
-        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors")]
+        #[arg(
+            long,
+            default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors"
+        )]
         checkpoint: PathBuf,
 
         /// Where to write the compiled artifact.
@@ -38,7 +41,10 @@ enum Command {
     /// Interactive chat using the model.
     Chat {
         /// Path to the safetensors checkpoint (weights).
-        #[arg(long, default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors")]
+        #[arg(
+            long,
+            default_value = "examples/smollm2/artifacts/smollm2-135m-instruct.safetensors"
+        )]
         checkpoint: PathBuf,
 
         /// Path to a HuggingFace tokenizer.json file.
@@ -108,7 +114,7 @@ fn compile_model(
     seq: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ckpt = Checkpoint::from_file(checkpoint)?;
-    let device = Device::cpu();
+    let device = Device::cpu()?;
 
     let batch: i64 = 1;
 
@@ -134,7 +140,7 @@ fn chat(
     max_tokens: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ckpt = Checkpoint::from_file(checkpoint)?;
-    let device = Device::cpu();
+    let device = Device::cpu()?;
     let batch: i64 = 1;
 
     let t0 = Instant::now();
@@ -146,8 +152,7 @@ fn chat(
         }
         None => {
             println!("No compiled artifact given, compiling from scratch (seq={seq})...");
-            let r =
-                device.compile("smollm2", |cx| trace_smollm2(cx, ckpt.shapes(), batch, seq))?;
+            let r = device.compile("smollm2", |cx| trace_smollm2(cx, ckpt.shapes(), batch, seq))?;
             println!("Compiled in {:.2?}", t0.elapsed());
             r
         }
@@ -164,15 +169,14 @@ fn chat(
 
     let eos_id = tokenizer
         .token_to_id("<|im_end|>")
-        .unwrap_or_else(|| {
-            tokenizer
-                .token_to_id("<|endoftext|>")
-                .unwrap_or(2)
-        }) as i32;
+        .unwrap_or_else(|| tokenizer.token_to_id("<|endoftext|>").unwrap_or(2))
+        as i32;
 
     let mut history = ChatHistory::new(system.to_string());
 
-    println!("\nSmolLM2-135M-Instruct ready. Type a message and press Enter. Type \"exit\" to quit.\n");
+    println!(
+        "\nSmolLM2-135M-Instruct ready. Type a message and press Enter. Type \"exit\" to quit.\n"
+    );
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -300,6 +304,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             system,
             seq,
             max_tokens,
-        } => chat(checkpoint, tokenizer, compiled.as_ref(), system, *seq, *max_tokens),
+        } => chat(
+            checkpoint,
+            tokenizer,
+            compiled.as_ref(),
+            system,
+            *seq,
+            *max_tokens,
+        ),
     }
 }

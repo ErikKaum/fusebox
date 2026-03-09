@@ -159,7 +159,9 @@ impl TransformerLayer {
             .forward(&normed, cos, sin, mask, batch, seq)?;
         let x = (x + &attn_out)?;
 
-        let normed = self.post_attention_layernorm.forward_with_eps(&x, RMS_EPS)?;
+        let normed = self
+            .post_attention_layernorm
+            .forward_with_eps(&x, RMS_EPS)?;
         let mlp_out = self.mlp.forward(&normed)?;
         &x + &mlp_out
     }
