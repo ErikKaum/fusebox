@@ -1,12 +1,14 @@
-# Fusebox
+# Fusebox 🔥
 
-Trace-based tensor compiler for Rust. Build computation graphs with a familiar tensor API, lower them to [StableHLO](https://github.com/openxla/stablehlo) MLIR, and execute through [PJRT](https://github.com/openxla/xla/tree/main/xla/pjrt) on CPU.
+There's only one ML framework that fully focuses on inference, and it's [ZML](https://github.com/zml/zml). But *how* does it work, and *what does it mean* to focus on inference rather than training? 
+
+I wanted to understand the stack properly, so I built a minimal version of ZML in Rust (this repo). To be more specific, fusebox is a trace-based tensor compiler for Rust. Build computation graphs with a familiar tensor API, lower them to [StableHLO](https://github.com/openxla/stablehlo) MLIR, and execute through [PJRT](https://github.com/openxla/xla/tree/main/xla/pjrt) on CPU.
 
 ## Background
 
-Fusebox started as an exercise in understanding how [ZML](https://github.com/zml/zml) works under the hood, the idea was to rebuild the core trace-compile-run loop from scratch in Rust and see what it actually takes to go from tensor ops to running hardware. What began as a learning project turned into something genuinely fun to hack on, and it kept growing from there.
+Fusebox started as an exercise in understanding how ZML works under the hood, the idea was to rebuild the core trace-compile-run loop from scratch in Rust and see what it actually takes to go from tensor ops to running hardware. What began as a learning project turned into something genuinely fun to hack on, and it kept growing from there.
 
-I wrote [a blog](https://www.erikkaum.com/blog/zml/) that hopefully clarifies how the stack works and helps you build your own toy/educational ML framework
+> I also wrote [a blog](https://www.erikkaum.com/blog/zml/) that hopefully clarifies how the stack works and helps you build your own toy/educational ML framework
 
 And despite being educational, it even runs the `SmolLM2-135M-Instruct` model on CPU:
 
