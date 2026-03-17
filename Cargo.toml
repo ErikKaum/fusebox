@@ -5,6 +5,7 @@ members = [".", "fusebox_macros"]
 name = "fusebox"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 fusebox_macros = { path = "fusebox_macros" }
